@@ -374,14 +374,14 @@ async function oddsUpdate24h() {
     await sleep(400);
 
     // ── Step 2: Update odds for non-finished fixtures within 24h ──
-    const now = Date.now();
-    const cutoff24h = now + 24 * 3600 * 1000;
+    const nowMs = Date.now();
+    const cutoff24h = nowMs + 24 * 3600 * 1000;
 
     // Fixtures within next 24h or recently started (up to 6h ago), excluding finished
     const targets = existing.filter(m => {
       if (FINISHED_STATUSES.has(m.status)) return false;
       const d = new Date(m.date).getTime();
-      return d <= cutoff24h && d >= now - 6 * 3600 * 1000;
+      return d <= cutoff24h && d >= nowMs - 6 * 3600 * 1000;
     });
 
     if (targets.length === 0) {
