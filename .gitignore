@@ -1,0 +1,15 @@
+# Environment variables (API KEY!)
+.env
+
+# Dependencies
+node_modules/
+
+# Cached API data (regenerated automatically)
+data/matches.json
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Claude
+.claude/

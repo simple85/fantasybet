@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BetZone - Admin</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <!-- LOGIN VIEW -->
+  <div class="login-page" id="adminLoginView">
+    <div class="login-container">
+      <div class="login-logo">
+        <h1>Bet<span>Zone</span></h1>
+        <p>Admin Panel</p>
+      </div>
+      <div class="login-card">
+        <h2 id="adminLoginTitle">Admin Login</h2>
+        <div class="form-group">
+          <label>ADMIN ID</label>
+          <input type="text" id="adminId" placeholder="admin" autocomplete="off">
+        </div>
+        <div class="form-group">
+          <label id="adminPassLabel">PASSWORD</label>
+          <input type="password" id="adminPass" placeholder="">
+        </div>
+        <button class="login-btn" onclick="adminLogin()">LOGIN</button>
+        <div class="login-error" id="adminError"></div>
+      </div>
+      <div class="admin-link" style="margin-top:1.5rem;">
+        <a href="index.html">Back</a>
+      </div>
+    </div>
+  </div>
+
+  <!-- ADMIN PANEL VIEW -->
+  <div class="admin-page" id="adminPanelView" style="display:none;">
+    <div class="admin-container">
+      <div class="admin-header">
+        <h1><span id="adminTitle">Admin Panel</span></h1>
+        <div style="display:flex;gap:0.5rem;">
+          <button class="admin-back" onclick="window.location.href='index.html'">Back</button>
+          <button class="admin-back" onclick="adminLogout()">Logout</button>
+        </div>
+      </div>
+
+      <!-- CREATE USER SECTION -->
+      <div class="create-user-section">
+        <h3 id="createUserTitle">Create User</h3>
+        <div class="create-user-form">
+          <input type="text" id="newUserId" placeholder="Username (ID)">
+          <input type="text" id="newUserName" placeholder="Display Name">
+          <input type="password" id="newUserPass" placeholder="Password">
+          <button class="btn-create" onclick="createUser()">+ Create</button>
+        </div>
+        <div class="create-user-error" id="createError"></div>
+      </div>
+
+      <h2 style="font-size:1rem;color:var(--text-secondary);margin-bottom:1rem;" id="userMgmtTitle">User Management</h2>
+
+      <div id="userCards"></div>
+
+      <!-- QUICK STATS -->
+      <div style="margin-top:2rem;background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-md);padding:1.2rem;">
+        <h3 style="font-size:0.85rem;color:var(--text-secondary);margin-bottom:0.8rem;">Stats</h3>
+        <div id="adminStats" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:1rem;"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- TOAST -->
+  <div class="toast" id="toast"></div>
+
+  <script src="js/config.js"></script>
+  <script src="js/i18n.js"></script>
+  <script>
+    let isAdminLoggedIn = false;
+    let usersData = [];
+
+    // Enter key
+    document.getElementById("adminPass").addEventListener("keypress", (e) => {
+      if (e.key === "Enter") adminLogin();
+    });
+
+    // Check session
+    if (sessionStorage.getItem("betzone_admin") === "true") {
+      showAdminPanel();
+    }
+
+    function adminLogin() {
+      const id = document.getElementById("adminId").value.trim();
+      const pass = document.getElementById("adminPass").value;
+      const errorEl = document.getElementById("adminError");
+
+      if (id === ADMIN.id && pass === ADMIN.password) {
+        sessionStorage.setItem("betzone_admin", "true");
+        showAdminPanel();
+      } else {
+        errorEl.textContent = t("loginError");
+        errorEl.classList.add("show");
+        setTimeout(() => errorEl.classList.remove("show"), 3000);
+      }
+    }
+
+    function adminLogout() {
+      sessionStorage.removeItem("betzone_admin");
+      location.reload();
+    }
+
+    async function showAdminPanel() {
+      document.getElementById("adminLoginView").style.display = "none";
+      document.getElementById("adminPanelView").style.display = "block";
+      await loadUsers();
+      renderUsers();
+      renderStats();
+    }
+
+    async function loadUsers() {
+      try {
+        const res = await fetch("/api/users");
+        usersData = await res.json();
+      } catch (e) {
+        usersData = [];
+      }
+    }
+
+    function renderUsers() {
+      const container = document.getElementById("userCards");
+      container.innerHTML = usersData.map(user => {
+        const credits = user.credits || 0;
+        const initials = user.displayName.split(" ").map(n => n[0]).join("").toUpperCase();
+
+        return '<div class="user-card">' +
+          '<div class="user-avatar">' + initials + '</div>' +
+          '<div class="user-info">' +
+            '<div class="name">' + user.displayName + '</div>' +
+            '<div class="id">@' + user.id + '</div>' +
+          '</div>' +
+          '<div class="user-credits-section">' +
+            '<div class="user-balance" id="balance-' + user.id + '">' + credits.toLocaleString() + ' &euro;</div>' +
+            '<div class="credit-action">' +
+              '<input type="number" id="amount-' + user.id + '" placeholder="0" min="0">' +
+              '<button class="btn-add" onclick="updateCredits(\'' + user.id + '\',\'add\')">+</button>' +
+              '<button class="btn-subtract" onclick="updateCredits(\'' + user.id + '\',\'subtract\')">-</button>' +
+              '<button class="btn-set" onclick="updateCredits(\'' + user.id + '\',\'set\')">=</button>' +
+            '</div>' +
+          '</div>' +
+          '<button class="btn-delete-user" onclick="deleteUser(\'' + user.id + '\',\'' + user.displayName.replace(/'/g, "\\'") + '\')" title="Delete user">X</button>' +
+        '</div>';
+      }).join("");
+    }
+
+    async function updateCredits(userId, action) {
+      const input = document.getElementById("amount-" + userId);
+      const amount = parseFloat(input.value) || 0;
+      if (amount <= 0 && action !== "set") return;
+      if (action === "set" && isNaN(parseFloat(input.value))) return;
+
+      try {
+        const res = await fetch("/api/users/" + userId + "/credits", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action, amount })
+        });
+        const data = await res.json();
+        if (data.success) {
+          document.getElementById("balance-" + userId).innerHTML = data.credits.toLocaleString() + " &euro;";
+          // Update local data
+          const user = usersData.find(u => u.id === userId);
+          if (user) user.credits = data.credits;
+          input.value = "";
+          showToast(t("creditUpdated") + ": " + userId + " -> " + data.credits.toLocaleString() + " €", "success");
+          renderStats();
+        }
+      } catch (e) {
+        showToast("Error updating credits", "error");
+      }
+    }
+
+    async function createUser() {
+      const id = document.getElementById("newUserId").value.trim();
+      const displayName = document.getElementById("newUserName").value.trim();
+      const password = document.getElementById("newUserPass").value;
+      const errorEl = document.getElementById("createError");
+
+      if (!id || !displayName || !password) {
+        errorEl.textContent = "All fields are required";
+        errorEl.style.display = "block";
+        setTimeout(() => errorEl.style.display = "none", 3000);
+        return;
+      }
+
+      try {
+        const res = await fetch("/api/users", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id, displayName, password })
+        });
+        const data = await res.json();
+
+        if (data.success) {
+          document.getElementById("newUserId").value = "";
+          document.getElementById("newUserName").value = "";
+          document.getElementById("newUserPass").value = "";
+          showToast(t("userCreated") + ": " + displayName, "success");
+          await loadUsers();
+          renderUsers();
+          renderStats();
+        } else {
+          errorEl.textContent = data.error || "Failed to create user";
+          errorEl.style.display = "block";
+          setTimeout(() => errorEl.style.display = "none", 3000);
+        }
+      } catch (e) {
+        errorEl.textContent = "Error creating user";
+        errorEl.style.display = "block";
+        setTimeout(() => errorEl.style.display = "none", 3000);
+      }
+    }
+
+    async function deleteUser(userId, name) {
+      if (!confirm(t("confirmDelete") + "\n" + name + " (@" + userId + ")")) return;
+
+      try {
+        const res = await fetch("/api/users/" + userId, { method: "DELETE" });
+        const data = await res.json();
+        if (data.success) {
+          showToast(t("userDeleted") + ": " + name, "success");
+          await loadUsers();
+          renderUsers();
+          renderStats();
+        }
+      } catch (e) {
+        showToast("Error deleting user", "error");
+      }
+    }
+
+    function renderStats() {
+      let totalCredits = 0;
+      usersData.forEach(user => { totalCredits += user.credits || 0; });
+
+      const stats = document.getElementById("adminStats");
+      stats.innerHTML =
+        '<div style="text-align:center;">' +
+          '<div style="font-size:0.7rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;">Users</div>' +
+          '<div style="font-family:var(--font-mono);font-size:1.5rem;font-weight:700;color:var(--accent);">' + usersData.length + '</div>' +
+        '</div>' +
+        '<div style="text-align:center;">' +
+          '<div style="font-size:0.7rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;">Total Balance</div>' +
+          '<div style="font-family:var(--font-mono);font-size:1.5rem;font-weight:700;color:var(--yellow);">' + totalCredits.toLocaleString() + ' €</div>' +
+        '</div>';
+    }
+
+    function showToast(message, type) {
+      const toast = document.getElementById("toast");
+      toast.textContent = (type === "success" ? "" : "") + message;
+      toast.className = "toast " + type + " show";
+      setTimeout(() => toast.classList.remove("show"), 3000);
+    }
+  </script>
+</body>
+</html>

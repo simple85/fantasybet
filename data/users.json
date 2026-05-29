@@ -1,0 +1,14 @@
+[
+  {
+    "id": "ali",
+    "password": "ali123",
+    "displayName": "Ali Yilmaz",
+    "credits": 700
+  },
+  {
+    "id": "test1",
+    "password": "test123",
+    "displayName": "Test Person",
+    "credits": 900
+  }
+]
