@@ -65,6 +65,7 @@ const I18N = {
     won: "Kazandı",
     lost: "Kaybetti",
     pending: "Bekliyor",
+    void: "İptal",
 
     // Admin
     adminTitle: "Yönetici Paneli",
@@ -156,6 +157,7 @@ const I18N = {
     won: "Won",
     lost: "Lost",
     pending: "Pending",
+    void: "Void",
 
     adminTitle: "Admin Panel",
     userManagement: "User Management",
@@ -246,6 +248,7 @@ const I18N = {
     won: "Gewonnen",
     lost: "Verloren",
     pending: "Ausstehend",
+    void: "Ungültig",
 
     adminTitle: "Admin-Bereich",
     userManagement: "Benutzerverwaltung",

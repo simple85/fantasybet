@@ -87,16 +87,28 @@
       showAdminPanel();
     }
 
-    function adminLogin() {
+    async function adminLogin() {
       const id = document.getElementById("adminId").value.trim();
       const pass = document.getElementById("adminPass").value;
       const errorEl = document.getElementById("adminError");
 
-      if (id === ADMIN.id && pass === ADMIN.password) {
-        sessionStorage.setItem("betzone_admin", "true");
-        showAdminPanel();
-      } else {
-        errorEl.textContent = t("loginError");
+      try {
+        const res = await fetch("/api/auth/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id, password: pass })
+        });
+        const data = await res.json();
+        if (data.success && data.user.isAdmin) {
+          sessionStorage.setItem("betzone_admin", "true");
+          showAdminPanel();
+        } else {
+          errorEl.textContent = t("loginError");
+          errorEl.classList.add("show");
+          setTimeout(() => errorEl.classList.remove("show"), 3000);
+        }
+      } catch (e) {
+        errorEl.textContent = "Connection error";
         errorEl.classList.add("show");
         setTimeout(() => errorEl.classList.remove("show"), 3000);
       }

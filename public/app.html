@@ -394,6 +394,31 @@
       renderLeagueTabs();
       updateSortToggle();
       showPage('home');
+
+      // Auto-refresh match data every 60 seconds (picks up live scores & status changes)
+      setInterval(async () => {
+        _matchesCache = null; // bust the cache so getMatches() fetches fresh data
+        const fresh = (await getMatches()).filter(m => m.bets && m.bets.length > 0);
+        matches = fresh;
+        // Re-render current view
+        const onHome = document.getElementById("homePage").style.display !== "none";
+        if (onHome) {
+          renderLeagueTabs();
+          renderMatches();
+        } else {
+          renderMyBets();
+        }
+        // Refresh credits too (settlement may have credited winnings)
+        try {
+          const res = await fetch("/api/users/" + currentUser.id);
+          if (res.ok) {
+            const u = await res.json();
+            currentUser.credits = u.credits;
+            localStorage.setItem("betzone_user", JSON.stringify(currentUser));
+            document.getElementById("creditsAmount").textContent = (currentUser.credits || 0).toLocaleString() + " €";
+          }
+        } catch (e) {}
+      }, 60000);
     }
 
     function updateUI() {
@@ -749,7 +774,10 @@
       // ── Expanded markets ──
       const expandedHtml = buildExpandedMarkets(match, bets, mid, bettingDisabled);
 
-      const statusBadgeHtml = '<span class="match-status-badge ' + statusClass + '">' + translateStatus(status) + '</span>';
+      const liveMinute = statusClass === "live" && match.elapsed ? match.elapsed + "'" : null;
+      const statusBadgeHtml = '<span class="match-status-badge ' + statusClass + '">' +
+        (liveMinute ? liveMinute : translateStatus(status)) +
+      '</span>';
       const leagueBadge = showLeagueBadge
         ? '<div class="match-league-badge">' +
             '<span>' + match.league.name + (match.league.country ? ' <span class="league-country-sm">(' + match.league.country + ')</span>' : '') + '</span>' +
@@ -1156,60 +1184,119 @@
       if (stake > MAX_BET) { showToast(t("maxBetError") + MAX_BET.toLocaleString(), "error"); return; }
       if (stake > credits) { showToast(t("insufficientCredits"), "error"); return; }
 
-      // Deduct credits on server
+      const totalOdds = betSlip.reduce((a, s) => a * s.odd, 1);
       try {
-        await fetch("/api/users/" + currentUser.id + "/credits", {
+        const res = await fetch("/api/bets", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "subtract", amount: stake })
+          body: JSON.stringify({
+            userId: currentUser.id,
+            selections: [...betSlip],
+            stake,
+            totalOdds,
+            possibleWin: stake * totalOdds,
+          })
         });
-      } catch (e) {}
-
-      const totalOdds = betSlip.reduce((a, s) => a * s.odd, 1);
-      const bet = {
-        id: "BZ" + Date.now().toString(36).toUpperCase(),
-        userId: currentUser.id,
-        timestamp: new Date().toISOString(),
-        selections: [...betSlip],
-        stake, totalOdds,
-        possibleWin: stake * totalOdds,
-        status: "pending"
-      };
-      const bets = JSON.parse(localStorage.getItem("betzone_bets_" + currentUser.id) || "[]");
-      bets.unshift(bet);
-      localStorage.setItem("betzone_bets_" + currentUser.id, JSON.stringify(bets));
-
-      currentUser.credits = credits - stake;
-      localStorage.setItem("betzone_user", JSON.stringify(currentUser));
-      clearSlip();
-      updateUI();
-      showToast(t("betPlaced"), "success");
+        const data = await res.json();
+        if (data.success) {
+          currentUser.credits = data.credits;
+          localStorage.setItem("betzone_user", JSON.stringify(currentUser));
+          clearSlip();
+          updateUI();
+          showToast(t("betPlaced"), "success");
+        } else {
+          showToast(data.error || t("insufficientCredits"), "error");
+        }
+      } catch (e) {
+        showToast("Connection error", "error");
+      }
     }
 
     // ── MY BETS ──
-    function renderMyBets() {
-      const bets = JSON.parse(localStorage.getItem("betzone_bets_" + currentUser.id) || "[]");
+    async function renderMyBets() {
+      let bets = [];
+      try {
+        const res = await fetch("/api/bets/" + currentUser.id);
+        if (res.ok) bets = await res.json();
+      } catch (e) {}
+
+      // Also refresh credits (settlement may have changed them)
+      try {
+        const res = await fetch("/api/users/" + currentUser.id);
+        if (res.ok) {
+          const fresh = await res.json();
+          currentUser.credits = fresh.credits;
+          localStorage.setItem("betzone_user", JSON.stringify(currentUser));
+          document.getElementById("creditsAmount").textContent = (currentUser.credits || 0).toLocaleString() + " €";
+        }
+      } catch (e) {}
+
       const active = bets.filter(b => b.status === "pending");
       const settled = bets.filter(b => b.status !== "pending");
+
       const renderBet = (bet) => {
         const dt = new Date(bet.timestamp);
-        return '<div class="bet-card">' +
+        const statusLabel = t(bet.status);
+
+        return '<div class="bet-card ' + bet.status + '">' +
           '<div class="bet-card-header">' +
             '<span class="bet-card-id">' + bet.id + '</span>' +
             '<span class="bet-card-date">' + dt.toLocaleDateString() + ' ' + dt.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) + '</span>' +
-            '<span class="bet-card-status ' + bet.status + '">' + t(bet.status) + '</span>' +
+            '<span class="bet-card-status ' + bet.status + '">' + statusLabel + '</span>' +
           '</div>' +
-          bet.selections.map(s =>
-            '<div class="bet-card-selection"><span class="match">' + s.matchLabel + '</span> — <strong>' + s.marketLabel + ': ' + s.pickLabel + '</strong>' +
-            '<span style="color:var(--accent);font-family:var(--font-mono);margin-left:0.5rem;">' + s.odd.toFixed(2) + '</span></div>'
-          ).join("") +
+          bet.selections.map(s => {
+            // Look up current match data for live score / final result
+            const match = matches.find(m => m.id === s.matchId);
+            let scoreHtml = '';
+            let statusBadge = '';
+            let timeInfo = '';
+            if (match) {
+              const st = match.status || "Not Started";
+              const sc = getStatusClass(st);
+
+              if (sc === "live") {
+                // Live: show elapsed minute + pulsing badge
+                const min = match.elapsed;
+                const minLabel = min ? min + "'" : translateStatus(st);
+                statusBadge = '<span class="match-status-badge live" style="font-size:0.55rem;padding:0.1rem 0.35rem;margin-left:0.4rem;">' + minLabel + '</span>';
+              } else if (sc === "upcoming") {
+                // Upcoming: show kickoff date & time
+                const kickoff = new Date(match.date);
+                const dayLabel = isToday(kickoff) ? t("today") : isTomorrow(kickoff) ? t("tomorrow") : kickoff.toLocaleDateString();
+                const timeLabel = kickoff.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                timeInfo = '<span style="font-size:0.7rem;color:var(--text-muted);margin-left:0.4rem;">⏱ ' + dayLabel + ' ' + timeLabel + '</span>';
+              } else {
+                // Finished / other
+                statusBadge = '<span class="match-status-badge ' + sc + '" style="font-size:0.55rem;padding:0.1rem 0.35rem;margin-left:0.4rem;">' + translateStatus(st) + '</span>';
+              }
+
+              if (match.score) {
+                scoreHtml = '<span style="font-family:var(--font-mono);color:var(--text-primary);font-weight:700;margin-left:0.4rem;">' + match.score.home + ' - ' + match.score.away + '</span>';
+              }
+            }
+            let resultIcon = '';
+            if (s.result === "won") resultIcon = '<span style="color:var(--accent);margin-left:0.3rem;">✓</span>';
+            else if (s.result === "lost") resultIcon = '<span style="color:var(--red);margin-left:0.3rem;">✗</span>';
+            else if (s.result === "void") resultIcon = '<span style="color:var(--text-muted);margin-left:0.3rem;">—</span>';
+
+            return '<div class="bet-card-selection">' +
+              '<div><span class="match">' + s.matchLabel + '</span>' + scoreHtml + statusBadge + timeInfo + '</div>' +
+              '<div style="margin-top:0.2rem;"><strong>' + s.marketLabel + ': ' + s.pickLabel + '</strong>' + resultIcon +
+              '<span style="color:var(--accent);font-family:var(--font-mono);margin-left:0.5rem;">' + s.odd.toFixed(2) + '</span></div>' +
+            '</div>';
+          }).join("") +
           '<div class="bet-card-footer">' +
             '<span>' + t("stake") + ': <strong>' + bet.stake.toFixed(2) + ' €</strong></span>' +
             '<span>' + t("totalOdds") + ': <strong>' + bet.totalOdds.toFixed(2) + '</strong></span>' +
-            '<span>' + t("possibleWin") + ': <strong style="color:var(--yellow)">' + bet.possibleWin.toFixed(2) + ' €</strong></span>' +
+            (bet.status === "won"
+              ? '<span style="color:var(--accent);font-weight:700;">+ ' + bet.possibleWin.toFixed(2) + ' €</span>'
+              : bet.status === "void"
+                ? '<span style="color:var(--text-muted);">' + t("stake") + ' ↩ ' + bet.stake.toFixed(2) + ' €</span>'
+                : '<span>' + t("possibleWin") + ': <strong style="color:var(--yellow)">' + bet.possibleWin.toFixed(2) + ' €</strong></span>') +
           '</div>' +
         '</div>';
       };
+
       document.getElementById("activeBetsList").innerHTML = active.length > 0 ? active.map(renderBet).join("") : '<p style="color:var(--text-muted);padding:1rem;">' + t("noBets") + '</p>';
       document.getElementById("settledBetsList").innerHTML = settled.length > 0 ? settled.map(renderBet).join("") : '<p style="color:var(--text-muted);padding:1rem;">' + t("noBets") + '</p>';
     }

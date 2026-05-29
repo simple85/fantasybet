@@ -157,6 +157,7 @@ async function fetchFixturesByDate(date) {
     id: item.fixture.id,
     date: item.fixture.date,
     status: item.fixture.status.long,
+    elapsed: item.fixture.status.elapsed,
     league: {
       id: item.league.id,
       name: item.league.name,
@@ -253,6 +254,10 @@ async function fullRefresh() {
   try {
     const today = new Date();
     const dates = [];
+    // Include yesterday to catch late-night matches that may still be in progress
+    const yesterday = new Date(today);
+    yesterday.setDate(yesterday.getDate() - 1);
+    dates.push(formatDate(yesterday));
     for (let i = 0; i < 4; i++) {
       const d = new Date(today);
       d.setDate(d.getDate() + i);
@@ -301,6 +306,7 @@ async function fullRefresh() {
 /**
  * Odds update for fixtures within 24 hours.
  * Runs every 5 minutes.
+ * Also refreshes fixture statuses & live scores so live matches appear correctly.
  */
 async function oddsUpdate24h() {
   if (_busy) { console.log("[SKIP] Another task is running"); return; }
@@ -320,6 +326,54 @@ async function oddsUpdate24h() {
       return fullRefresh();
     }
 
+    // ── Step 1: Refresh fixture statuses & scores for today + yesterday ──
+    // Today covers most live/upcoming matches.
+    // Yesterday catches late-night kickoffs (e.g. 23:00) that finish after midnight.
+    const now = new Date();
+    const today = formatDate(now);
+    const yesterday = formatDate(new Date(now.getTime() - 24 * 3600 * 1000));
+    const datesToRefresh = [today];
+
+    // Only fetch yesterday if we still have unfinished matches from that date
+    const hasUnfinishedYesterday = existing.some(m => {
+      const mDate = formatDate(new Date(m.date));
+      return mDate === yesterday && !FINISHED_STATUSES.has(m.status);
+    });
+    if (hasUnfinishedYesterday) datesToRefresh.unshift(yesterday);
+
+    console.log(`  Refreshing fixture statuses for: ${datesToRefresh.join(", ")}...`);
+    try {
+      let statusUpdates = 0;
+      let totalFetched = 0;
+      for (const date of datesToRefresh) {
+        const fixtureData = await apiRequest("fixtures", { date });
+        const freshFixtures = fixtureData.response || [];
+        totalFetched += freshFixtures.length;
+        for (const item of freshFixtures) {
+          const match = existing.find(m => m.id === item.fixture.id);
+          if (match) {
+            const newStatus = item.fixture.status.long;
+            const newElapsed = item.fixture.status.elapsed;
+            const newScore = item.goals.home !== null
+              ? { home: item.goals.home, away: item.goals.away }
+              : null;
+            if (match.status !== newStatus || match.elapsed !== newElapsed || JSON.stringify(match.score) !== JSON.stringify(newScore)) {
+              match.status = newStatus;
+              match.elapsed = newElapsed;
+              match.score = newScore;
+              statusUpdates++;
+            }
+          }
+        }
+        if (datesToRefresh.length > 1) await sleep(400);
+      }
+      console.log(`  Refreshed statuses: ${statusUpdates} changed out of ${totalFetched} fixtures`);
+    } catch (err) {
+      console.error("  Status refresh failed:", err.message);
+    }
+    await sleep(400);
+
+    // ── Step 2: Update odds for non-finished fixtures within 24h ──
     const now = Date.now();
     const cutoff24h = now + 24 * 3600 * 1000;
 
@@ -331,7 +385,8 @@ async function oddsUpdate24h() {
     });
 
     if (targets.length === 0) {
-      console.log("No eligible fixtures within 24h window.");
+      console.log("No eligible fixtures within 24h window for odds.");
+      saveData(existing); // still save status updates from step 1
       _busy = false;
       return;
     }
