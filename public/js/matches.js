@@ -16,15 +16,20 @@ async function getMatches() {
       const data = await res.json();
       if (data.matches && data.matches.length > 0) {
         console.log("Loaded " + data.matches.length + " matches from API");
-        _matchesCache = data.matches;
+        // Return the full response (includes liveOdds) but also keep matches array accessible via .filter etc.
+        const result = data.matches;
+        result.liveOdds = data.liveOdds || [];
+        _matchesCache = result;
         _lastFetch = Date.now();
-        return data.matches;
+        return result;
       }
     }
   } catch (e) {
     console.log("API not available, using mock data");
   }
-  return getMockMatches();
+  const mock = getMockMatches();
+  mock.liveOdds = [];
+  return mock;
 }
 
 function getMockMatches() {

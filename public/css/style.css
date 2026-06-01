@@ -1790,3 +1790,337 @@ input {
     grid-template-columns: repeat(auto-fill, minmax(70px, 1fr));
   }
 }
+
+/* ══════════════════════════════════════════
+   REAL-TIME: Starting / Ended badges
+   ══════════════════════════════════════════ */
+
+.match-status.starting {
+  background: var(--yellow-dim);
+  color: var(--yellow);
+  animation: startPulse 1.5s infinite;
+}
+
+@keyframes startPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.match-status.ended {
+  background: rgba(90, 100, 120, 0.15);
+  color: var(--text-muted);
+}
+
+/* ══════════════════════════════════════════
+   REAL-TIME: Odds change flash animation
+   ══════════════════════════════════════════ */
+
+.odd-value {
+  transition: color 0.3s, transform 0.3s;
+}
+
+.odd-value.flash-up {
+  animation: flashUp 1.2s ease-out;
+}
+
+.odd-value.flash-down {
+  animation: flashDown 1.2s ease-out;
+}
+
+@keyframes flashUp {
+  0%   { color: var(--accent); transform: scale(1.15); }
+  50%  { color: var(--accent); }
+  100% { color: inherit; transform: scale(1); }
+}
+
+@keyframes flashDown {
+  0%   { color: var(--red); transform: scale(1.15); }
+  50%  { color: var(--red); }
+  100% { color: inherit; transform: scale(1); }
+}
+
+/* Arrow indicators next to changed odds */
+.odd-arrow {
+  font-size: 0.6rem;
+  margin-left: 2px;
+  vertical-align: middle;
+}
+
+.odd-arrow.up { color: var(--accent); }
+.odd-arrow.down { color: var(--red); }
+
+/* ══════════════════════════════════════════
+   REAL-TIME: Suspended bet overlay
+   ══════════════════════════════════════════ */
+
+.odd-btn.suspended,
+.player-odd-btn.suspended,
+.score-btn.suspended {
+  opacity: 0.35;
+  pointer-events: none;
+  position: relative;
+}
+
+.odd-btn.suspended::after,
+.player-odd-btn.suspended::after,
+.score-btn.suspended::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    -45deg,
+    transparent,
+    transparent 4px,
+    rgba(255, 71, 87, 0.08) 4px,
+    rgba(255, 71, 87, 0.08) 8px
+  );
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+/* ══════════════════════════════════════════
+   REAL-TIME: Accept odds changes toggle
+   ══════════════════════════════════════════ */
+
+.accept-odds-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  margin-bottom: 0.5rem;
+  background: var(--bg-input);
+  border-radius: var(--radius-sm);
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+}
+
+.accept-odds-row label {
+  flex: 1;
+  cursor: pointer;
+  user-select: none;
+}
+
+.accept-odds-toggle {
+  position: relative;
+  width: 36px;
+  height: 20px;
+  flex-shrink: 0;
+}
+
+.accept-odds-toggle input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.accept-odds-toggle .slider {
+  position: absolute;
+  inset: 0;
+  background: var(--border);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: background 0.25s;
+}
+
+.accept-odds-toggle .slider::before {
+  content: '';
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  left: 2px;
+  top: 2px;
+  background: var(--text-secondary);
+  border-radius: 50%;
+  transition: transform 0.25s, background 0.25s;
+}
+
+.accept-odds-toggle input:checked + .slider {
+  background: var(--accent-dim);
+}
+
+.accept-odds-toggle input:checked + .slider::before {
+  transform: translateX(16px);
+  background: var(--accent);
+}
+
+/* ══════════════════════════════════════════
+   REAL-TIME: Odds change prompt modal
+   ══════════════════════════════════════════ */
+
+.odds-change-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  backdrop-filter: blur(4px);
+}
+
+.odds-change-box {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 1.5rem;
+  max-width: 360px;
+  width: 90%;
+  text-align: center;
+}
+
+.odds-change-box h3 {
+  color: var(--yellow);
+  font-size: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.odds-change-box p {
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  margin-bottom: 1rem;
+  line-height: 1.4;
+}
+
+.odds-change-detail {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+  font-family: var(--font-mono);
+  font-size: 0.95rem;
+}
+
+.odds-change-detail .old-odd {
+  color: var(--text-muted);
+  text-decoration: line-through;
+}
+
+.odds-change-detail .arrow {
+  color: var(--text-secondary);
+}
+
+.odds-change-detail .new-odd {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.odds-change-btns {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.odds-change-btns button {
+  flex: 1;
+  padding: 0.6rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.odds-change-btns .btn-accept {
+  background: var(--accent);
+  color: #000;
+}
+
+.odds-change-btns .btn-accept:hover {
+  background: var(--accent-hover);
+}
+
+.odds-change-btns .btn-reject {
+  background: var(--bg-input);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+}
+
+.odds-change-btns .btn-reject:hover {
+  border-color: var(--text-secondary);
+}
+
+/* ══════════════════════════════════════════
+   REAL-TIME: Toast notification for removed bets
+   ══════════════════════════════════════════ */
+
+.toast-container {
+  position: fixed;
+  top: 80px;
+  right: 1rem;
+  z-index: 9998;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  pointer-events: none;
+}
+
+.toast {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--yellow);
+  border-radius: var(--radius-sm);
+  padding: 0.6rem 1rem;
+  font-size: 0.8rem;
+  color: var(--text-primary);
+  max-width: 320px;
+  pointer-events: auto;
+  animation: toastIn 0.3s ease-out, toastOut 0.3s ease-in 3.7s forwards;
+  box-shadow: var(--shadow-lg);
+}
+
+.toast.error {
+  border-left-color: var(--red);
+}
+
+.toast.success {
+  border-left-color: var(--accent);
+}
+
+@keyframes toastIn {
+  from { opacity: 0; transform: translateX(100%); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes toastOut {
+  from { opacity: 1; transform: translateX(0); }
+  to   { opacity: 0; transform: translateX(100%); }
+}
+
+/* ══════════════════════════════════════════
+   REAL-TIME: SSE connection indicator
+   ══════════════════════════════════════════ */
+
+.sse-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  margin-left: 0.5rem;
+}
+
+.sse-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+
+.sse-dot.connected {
+  background: var(--accent);
+  box-shadow: 0 0 4px var(--accent);
+}
+
+.sse-dot.disconnected {
+  background: var(--red);
+}
+
+/* Live badge on match card (override for starting) */
+.match-card.starting {
+  border-left: 3px solid var(--yellow);
+}
+
+.match-card.starting .match-status {
+  background: var(--yellow-dim);
+  color: var(--yellow);
+}

@@ -253,6 +253,7 @@
       </div>
       <div class="header-right">
         <div class="live-clock" id="liveClock">--:--:--</div>
+        <span class="sse-indicator" id="sseIndicator"><span class="sse-dot" id="sseDot"></span></span>
         <div class="credits-display">
           <span class="amount" id="creditsAmount">0 €</span>
         </div>
@@ -300,6 +301,13 @@
           <div id="betslipItems"></div>
         </div>
         <div class="betslip-footer" id="betslipFooter" style="display:none;">
+          <div class="accept-odds-row">
+            <label for="acceptOddsToggle" id="acceptOddsLabel">Accept odds changes</label>
+            <div class="accept-odds-toggle">
+              <input type="checkbox" id="acceptOddsToggle" checked onchange="acceptOddsChanges = this.checked">
+              <span class="slider"></span>
+            </div>
+          </div>
           <div class="stake-input-group">
             <label id="stakeLabel">Stake</label>
             <input type="number" id="stakeInput" min="1" placeholder="0" oninput="updateSlipSummary()">
@@ -331,6 +339,8 @@
   </div>
 
   <div class="toast" id="toast"></div>
+  <div class="toast-container" id="toastContainer"></div>
+  <div id="oddsChangeModal"></div>
 
   <script src="js/config.js"></script>
   <script src="js/i18n.js"></script>
@@ -342,6 +352,10 @@
     let currentLeague = "all";
     let sortMode = "time"; // "time" or "league"
     let matches = [];
+    let acceptOddsChanges = true;
+    let liveOddsMap = {};      // { fixtureId: { odds: [...], fixtureStatus: {...}, update: string } }
+    let sseSource = null;
+    let sseConnected = false;
 
     // ── LIVE CLOCK ──
     function startClock() {
@@ -389,26 +403,68 @@
           localStorage.setItem("betzone_user", JSON.stringify(currentUser));
         }
       } catch (e) {}
-      matches = (await getMatches()).filter(m => m.bets && m.bets.length > 0);
+      const apiData = await getMatches();
+      matches = apiData.filter(m => m.bets && m.bets.length > 0);
+      // Seed liveOddsMap from initial API response
+      if (apiData.liveOdds && Array.isArray(apiData.liveOdds)) {
+        apiData.liveOdds.forEach(lo => { liveOddsMap[lo.fixtureId] = lo; });
+      }
       updateUI();
       renderLeagueTabs();
       updateSortToggle();
       showPage('home');
 
-      // Auto-refresh match data every 60 seconds (picks up live scores & status changes)
-      setInterval(async () => {
-        _matchesCache = null; // bust the cache so getMatches() fetches fresh data
-        const fresh = (await getMatches()).filter(m => m.bets && m.bets.length > 0);
-        matches = fresh;
-        // Re-render current view
-        const onHome = document.getElementById("homePage").style.display !== "none";
-        if (onHome) {
-          renderLeagueTabs();
-          renderMatches();
-        } else {
-          renderMyBets();
-        }
-        // Refresh credits too (settlement may have credited winnings)
+      // Connect to SSE for real-time updates
+      connectSSE();
+
+      // "Starting" tag checker: every second, check if any NS match is within 60s of kickoff
+      setInterval(checkStartingMatches, 1000);
+    }
+
+    // ══════════════════════════════════════════
+    // SSE CONNECTION
+    // ══════════════════════════════════════════
+    function connectSSE() {
+      if (sseSource) { sseSource.close(); }
+      sseSource = new EventSource("/api/live-stream");
+
+      sseSource.addEventListener("connected", (e) => {
+        sseConnected = true;
+        document.getElementById("sseDot").className = "sse-dot connected";
+        console.log("[SSE] Connected", JSON.parse(e.data));
+      });
+
+      sseSource.addEventListener("liveOdds", (e) => {
+        const oddsArr = JSON.parse(e.data);
+        handleLiveOdds(oddsArr);
+      });
+
+      sseSource.addEventListener("liveScores", (e) => {
+        const updates = JSON.parse(e.data);
+        handleLiveScores(updates);
+      });
+
+      sseSource.addEventListener("fixturesUpdate", async (e) => {
+        console.log("[SSE] Fixtures updated");
+        _matchesCache = null;
+        const fresh = await getMatches();
+        matches = fresh.filter(m => m.bets && m.bets.length > 0);
+        renderLeagueTabs();
+        renderMatches();
+      });
+
+      sseSource.addEventListener("oddsUpdate", async (e) => {
+        console.log("[SSE] Pre-match odds updated");
+        _matchesCache = null;
+        const fresh = await getMatches();
+        matches = fresh.filter(m => m.bets && m.bets.length > 0);
+        renderMatches();
+      });
+
+      sseSource.addEventListener("settled", async (e) => {
+        const data = JSON.parse(e.data);
+        console.log("[SSE] Bets settled:", data.settled);
+        // Refresh credits
         try {
           const res = await fetch("/api/users/" + currentUser.id);
           if (res.ok) {
@@ -417,8 +473,225 @@
             localStorage.setItem("betzone_user", JSON.stringify(currentUser));
             document.getElementById("creditsAmount").textContent = (currentUser.credits || 0).toLocaleString() + " €";
           }
-        } catch (e) {}
-      }, 60000);
+        } catch (e2) {}
+        // Refresh my bets if visible
+        if (document.getElementById("mybetsPage").style.display !== "none") {
+          renderMyBets();
+        }
+      });
+
+      sseSource.onerror = () => {
+        sseConnected = false;
+        document.getElementById("sseDot").className = "sse-dot disconnected";
+        // EventSource auto-reconnects
+      };
+    }
+
+    // ── Handle live odds from SSE (every 5s) ──
+    function handleLiveOdds(oddsArr) {
+      oddsArr.forEach(item => {
+        const prev = liveOddsMap[item.fixtureId];
+        liveOddsMap[item.fixtureId] = item;
+
+        // Update visible odds in DOM with animations
+        updateOddsInDOM(item.fixtureId, item.odds, prev?.odds || []);
+
+        // Check betslip for odds changes and suspended bets
+        checkBetslipOddsChanges(item);
+      });
+    }
+
+    // ── Update visible odds values in the DOM without full re-render ──
+    function updateOddsInDOM(fixtureId, newOdds, prevOdds) {
+      // Build prev lookup: betId-value → odd
+      const prevMap = {};
+      prevOdds.forEach(bet => {
+        (bet.values || []).forEach(v => {
+          prevMap[bet.id + "-" + v.value] = v.odd;
+        });
+      });
+
+      newOdds.forEach(bet => {
+        (bet.values || []).forEach(v => {
+          const key = fixtureId + "-" + bet.id + "-" + v.value;
+          const el = document.querySelector('[data-odd-key="' + CSS.escape(key) + '"]');
+          if (!el) return;
+
+          const newVal = parseFloat(v.odd).toFixed(2);
+          const oldText = el.textContent.trim();
+
+          // Handle suspended
+          const btn = el.closest(".odd-btn, .player-odd-btn, .score-btn");
+          if (v.suspended) {
+            if (btn) btn.classList.add("suspended");
+            return;
+          } else {
+            if (btn) btn.classList.remove("suspended");
+          }
+
+          if (newVal !== oldText) {
+            const prevVal = prevMap[bet.id + "-" + v.value];
+            el.textContent = newVal;
+            el.classList.remove("flash-up", "flash-down");
+            void el.offsetWidth; // reflow to restart animation
+            if (prevVal && parseFloat(v.odd) > parseFloat(prevVal)) {
+              el.classList.add("flash-up");
+            } else {
+              el.classList.add("flash-down");
+            }
+          }
+        });
+      });
+    }
+
+    // ── Check betslip selections against live odds ──
+    function checkBetslipOddsChanges(liveItem) {
+      const fixtureId = liveItem.fixtureId;
+      const status = liveItem.fixtureStatus || {};
+      let changed = false;
+
+      for (let i = betSlip.length - 1; i >= 0; i--) {
+        const sel = betSlip[i];
+        if (sel.matchId !== fixtureId) continue;
+
+        // Find matching bet in live odds
+        const liveBet = (liveItem.odds || []).find(b => b.id === sel.betId);
+        if (!liveBet) continue;
+
+        const liveVal = (liveBet.values || []).find(v => v.value === sel.pick);
+
+        // If suspended or not found → remove from betslip
+        if (!liveVal || liveVal.suspended || status.stopped || status.blocked) {
+          const removedLabel = sel.matchLabel + " — " + sel.marketLabel + ": " + sel.pickLabel;
+          betSlip.splice(i, 1);
+          showStackToast(removedLabel + " " + t("betRemoved"), "error");
+          changed = true;
+          continue;
+        }
+
+        // If odds changed
+        const newOdd = parseFloat(liveVal.odd);
+        if (Math.abs(newOdd - sel.odd) > 0.001) {
+          if (acceptOddsChanges) {
+            // Auto-update
+            sel.odd = newOdd;
+            changed = true;
+          } else {
+            // Show prompt
+            showOddsChangeModal(sel, newOdd, i);
+          }
+        }
+      }
+
+      if (changed) {
+        renderBetSlip();
+      }
+    }
+
+    // ── Handle live scores from SSE (every 15s) ──
+    function handleLiveScores(updates) {
+      let anyChanged = false;
+      updates.forEach(u => {
+        const match = matches.find(m => m.id === u.id);
+        if (!match) return;
+
+        match.status = u.status;
+        match.statusShort = u.statusShort;
+        match.elapsed = u.elapsed;
+        if (u.score) match.score = u.score;
+        anyChanged = true;
+
+        // Update score in DOM
+        const scoreHome = document.querySelector('[data-score-home="' + u.id + '"]');
+        const scoreAway = document.querySelector('[data-score-away="' + u.id + '"]');
+        if (scoreHome && u.score) scoreHome.textContent = u.score.home;
+        if (scoreAway && u.score) scoreAway.textContent = u.score.away;
+
+        // Update status badge in DOM
+        const badge = document.querySelector('[data-match-status="' + u.id + '"]');
+        if (badge) {
+          const sc = getStatusClass(u.status);
+          badge.className = "match-status-badge " + sc;
+          if (sc === "live" && u.elapsed) {
+            badge.textContent = u.elapsed + "'";
+          } else {
+            badge.textContent = translateStatus(u.status);
+          }
+        }
+      });
+
+      // Also refresh My Bets if visible (scores update there too)
+      if (anyChanged && document.getElementById("mybetsPage").style.display !== "none") {
+        renderMyBets();
+      }
+    }
+
+    // ── Check for "starting" matches (1 min before kickoff) ──
+    function checkStartingMatches() {
+      const now = Date.now();
+      matches.forEach(m => {
+        if (m.status !== "Not Started" && m.statusShort !== "NS") return;
+        const kickoff = new Date(m.date).getTime();
+        const diff = kickoff - now;
+        if (diff <= 60000 && diff > -300000) { // 1 min before to 5 min after (in case of delayed start)
+          const badge = document.querySelector('[data-match-status="' + m.id + '"]');
+          if (badge && !badge.classList.contains("starting")) {
+            badge.className = "match-status-badge starting";
+            badge.textContent = t("starting");
+          }
+          const card = document.getElementById("card-" + m.id);
+          if (card) card.classList.add("starting");
+        }
+      });
+    }
+
+    // ── Odds change modal ──
+    function showOddsChangeModal(sel, newOdd, index) {
+      const html = '<div class="odds-change-modal" onclick="closeOddsChangeModal()">' +
+        '<div class="odds-change-box" onclick="event.stopPropagation()">' +
+          '<h3>⚠ ' + t("oddsChanged") + '</h3>' +
+          '<p>' + sel.matchLabel + '<br>' + sel.marketLabel + ': ' + sel.pickLabel + '</p>' +
+          '<div class="odds-change-detail">' +
+            '<span class="old-odd">' + sel.odd.toFixed(2) + '</span>' +
+            '<span class="arrow">&rarr;</span>' +
+            '<span class="new-odd">' + newOdd.toFixed(2) + '</span>' +
+          '</div>' +
+          '<div class="odds-change-btns">' +
+            '<button class="btn-accept" onclick="acceptOddChange(' + index + ',' + newOdd + ')">' + t("acceptNewOdds") + '</button>' +
+            '<button class="btn-reject" onclick="rejectOddChange(' + index + ')">' + t("rejectNewOdds") + '</button>' +
+          '</div>' +
+        '</div>' +
+      '</div>';
+      document.getElementById("oddsChangeModal").innerHTML = html;
+    }
+
+    function closeOddsChangeModal() {
+      document.getElementById("oddsChangeModal").innerHTML = "";
+    }
+
+    function acceptOddChange(index, newOdd) {
+      if (betSlip[index]) {
+        betSlip[index].odd = newOdd;
+        renderBetSlip();
+      }
+      closeOddsChangeModal();
+    }
+
+    function rejectOddChange(index) {
+      betSlip.splice(index, 1);
+      renderBetSlip();
+      renderMatches();
+      closeOddsChangeModal();
+    }
+
+    // ── Stacking toast notifications ──
+    function showStackToast(msg, type) {
+      const container = document.getElementById("toastContainer");
+      const el = document.createElement("div");
+      el.className = "toast " + (type || "");
+      el.textContent = msg;
+      container.appendChild(el);
+      setTimeout(() => { el.remove(); }, 4000);
     }
 
     function updateUI() {
@@ -610,9 +883,14 @@
       "Match Interrupted", "Match Abandoned",
     ]);
 
-    function getStatusClass(status) {
+    function getStatusClass(status, matchDate) {
       if (FINISHED_STATUSES.has(status)) return "finished";
       if (LIVE_STATUSES.has(status)) return "live";
+      // "Starting" = Not Started + within 1 minute of kickoff
+      if (status === "Not Started" && matchDate) {
+        const diff = new Date(matchDate).getTime() - Date.now();
+        if (diff <= 60000 && diff > -300000) return "starting";
+      }
       return "upcoming";
     }
 
@@ -629,20 +907,22 @@
       }
 
       if (sortMode === "live") {
-        // ── Live matches only ──
-        const liveNotice = '<div class="live-notice">' + t("liveNotice") + '</div>';
-        const liveMatches = filtered.filter(m => getStatusClass(m.status || "Not Started") === "live");
+        // ── Live + Starting matches ──
+        const liveMatches = filtered.filter(m => {
+          const sc = getStatusClass(m.status || "Not Started", m.date);
+          return sc === "live" || sc === "starting";
+        });
         if (liveMatches.length === 0) {
-          container.innerHTML = liveNotice + '<div class="betslip-empty" style="padding:3rem;"><div class="icon">⚽</div><p>' + t("noMatches") + '</p></div>';
+          container.innerHTML = '<div class="betslip-empty" style="padding:3rem;"><div class="icon">⚽</div><p>' + t("noMatches") + '</p></div>';
           return;
         }
         const sorted = [...liveMatches].sort((a, b) => new Date(a.date) - new Date(b.date));
-        let html = liveNotice;
+        let html = "";
         sorted.forEach(m => { html += renderMatchCard(m, true); });
         container.innerHTML = html;
       } else if (sortMode === "finished") {
         // ── Finished matches only ──
-        const finishedMatches = filtered.filter(m => getStatusClass(m.status || "Not Started") === "finished");
+        const finishedMatches = filtered.filter(m => getStatusClass(m.status || "Not Started", m.date) === "finished");
         if (finishedMatches.length === 0) {
           container.innerHTML = '<div class="betslip-empty" style="padding:3rem;"><div class="icon">⚽</div><p>' + t("noMatches") + '</p></div>';
           return;
@@ -655,7 +935,8 @@
         // ── By Time / By League / Specific league: exclude live, finished & past ──
         const now = new Date();
         const upcoming = filtered.filter(m => {
-          if (getStatusClass(m.status || "Not Started") !== "upcoming") return false;
+          const sc = getStatusClass(m.status || "Not Started", m.date);
+          if (sc !== "upcoming") return false;
           return new Date(m.date) > now;
         });
         if (upcoming.length === 0) {
@@ -721,15 +1002,15 @@
 
       // Status badge
       const status = match.status || "Not Started";
-      const statusClass = getStatusClass(status);
+      const statusClass = getStatusClass(status, match.date);
 
-      // Disable betting for live and finished matches
-      const bettingDisabled = statusClass === "live" || statusClass === "finished";
+      // Disable betting only for finished matches — live and starting matches allow betting
+      const bettingDisabled = statusClass === "finished";
 
-      // Score display
+      // Score display with data attributes for SSE updates
       let scoreHtml = '<div class="match-vs">vs</div>';
       if (match.score) {
-        scoreHtml = '<div class="match-score"><span>' + match.score.home + '</span><span class="divider">-</span><span>' + match.score.away + '</span></div>';
+        scoreHtml = '<div class="match-score"><span data-score-home="' + mid + '">' + match.score.home + '</span><span class="divider">-</span><span data-score-away="' + mid + '">' + match.score.away + '</span></div>';
       }
 
       // ── Primary odds: Match Winner (1), Goals O/U 2.5 (5), BTTS (8) ──
@@ -775,8 +1056,9 @@
       const expandedHtml = buildExpandedMarkets(match, bets, mid, bettingDisabled);
 
       const liveMinute = statusClass === "live" && match.elapsed ? match.elapsed + "'" : null;
-      const statusBadgeHtml = '<span class="match-status-badge ' + statusClass + '">' +
-        (liveMinute ? liveMinute : translateStatus(status)) +
+      const statusText = statusClass === "starting" ? t("starting") : (liveMinute ? liveMinute : translateStatus(status));
+      const statusBadgeHtml = '<span class="match-status-badge ' + statusClass + '" data-match-status="' + mid + '">' +
+        statusText +
       '</span>';
       const leagueBadge = showLeagueBadge
         ? '<div class="match-league-badge">' +
@@ -860,9 +1142,9 @@
         });
       }
 
-      // Over/Under & Goal Line bets — group by line, Over before Under
-      // Bet IDs: 5, 6, 50, 55, 72, 45, 77
-      if ([5, 6, 50, 55, 72, 45, 77].includes(betId)) {
+      // Over/Under bets — group by line, Over before Under
+      // Bet IDs: 5, 6, 72, 45, 77
+      if ([5, 6, 72, 45, 77].includes(betId)) {
         return sorted.sort((a, b) => {
           const parseOU = (v) => {
             const s = String(v);
@@ -986,9 +1268,11 @@
         html += '<div class="player-odds-grid">';
         values.forEach(v => {
           const sel = !disabled && isSelected(mid, bet.id, v.value) ? "selected" : "";
-          html += '<button class="player-odd-btn ' + sel + disClass + '"' + disAttr + ' onclick="toggleOdd(' + mid + ',' + bet.id + ',\'' + esc(v.value) + '\',' + v.odd + ',\'' + esc(bet.name) + '\')">' +
+          const oddKey = mid + "-" + bet.id + "-" + v.value;
+          const suspClass = v.suspended ? " suspended" : "";
+          html += '<button class="player-odd-btn ' + sel + disClass + suspClass + '"' + disAttr + ' onclick="toggleOdd(' + mid + ',' + bet.id + ',\'' + esc(v.value) + '\',' + v.odd + ',\'' + esc(bet.name) + '\')">' +
             '<span class="pname">' + v.value + '</span>' +
-            '<span class="pvalue">' + parseFloat(v.odd).toFixed(2) + '</span>' +
+            '<span class="pvalue odd-value" data-odd-key="' + esc(oddKey) + '">' + parseFloat(v.odd).toFixed(2) + '</span>' +
           '</button>';
         });
         html += '</div>';
@@ -997,9 +1281,11 @@
         html += '<div class="score-grid">';
         values.forEach(v => {
           const sel = !disabled && isSelected(mid, bet.id, v.value) ? "selected" : "";
-          html += '<button class="odd-btn ' + sel + disClass + '"' + disAttr + ' onclick="toggleOdd(' + mid + ',' + bet.id + ',\'' + esc(v.value) + '\',' + v.odd + ',\'' + esc(bet.name) + '\')">' +
+          const oddKey = mid + "-" + bet.id + "-" + v.value;
+          const suspClass = v.suspended ? " suspended" : "";
+          html += '<button class="odd-btn ' + sel + disClass + suspClass + '"' + disAttr + ' onclick="toggleOdd(' + mid + ',' + bet.id + ',\'' + esc(v.value) + '\',' + v.odd + ',\'' + esc(bet.name) + '\')">' +
             '<span class="label">' + String(v.value) + '</span>' +
-            '<span class="value">' + parseFloat(v.odd).toFixed(2) + '</span>' +
+            '<span class="value odd-value" data-odd-key="' + esc(oddKey) + '">' + parseFloat(v.odd).toFixed(2) + '</span>' +
           '</button>';
         });
         html += '</div>';
@@ -1013,9 +1299,11 @@
           if (label.length > 20) label = label.replace(homeName, shortName(homeName)).replace(awayName, shortName(awayName));
 
           const sel = !disabled && isSelected(mid, bet.id, v.value) ? "selected" : "";
-          html += '<button class="odd-btn ' + sel + disClass + '"' + disAttr + ' onclick="toggleOdd(' + mid + ',' + bet.id + ',\'' + esc(v.value) + '\',' + v.odd + ',\'' + esc(bet.name) + '\')">' +
+          const oddKey = mid + "-" + bet.id + "-" + v.value;
+          const suspClass = v.suspended ? " suspended" : "";
+          html += '<button class="odd-btn ' + sel + disClass + suspClass + '"' + disAttr + ' onclick="toggleOdd(' + mid + ',' + bet.id + ',\'' + esc(v.value) + '\',' + v.odd + ',\'' + esc(bet.name) + '\')">' +
             '<span class="label">' + label + '</span>' +
-            '<span class="value">' + parseFloat(v.odd).toFixed(2) + '</span>' +
+            '<span class="value odd-value" data-odd-key="' + esc(oddKey) + '">' + parseFloat(v.odd).toFixed(2) + '</span>' +
           '</button>';
         });
         html += '</div>';
@@ -1031,9 +1319,10 @@
       const sel = !disabled && isSelected(matchId, betId, pick) ? "selected" : "";
       const disAttr = disabled ? ' disabled' : '';
       const disClass = disabled ? ' disabled' : '';
+      const oddKey = matchId + "-" + betId + "-" + pick;
       return '<button class="odd-btn ' + sel + disClass + '"' + disAttr + ' onclick="toggleOdd(' + matchId + ',' + betId + ',\'' + esc(pick) + '\',' + value + ',\'' + esc(fullName || label) + '\')">' +
         '<span class="label">' + label + '</span>' +
-        '<span class="value">' + parseFloat(value).toFixed(2) + '</span>' +
+        '<span class="value odd-value" data-odd-key="' + esc(oddKey) + '">' + parseFloat(value).toFixed(2) + '</span>' +
       '</button>';
     }
 
@@ -1143,16 +1432,24 @@
       if (count === 0) sidebar.classList.remove("open");
       // Auto-expand on first bet only
       if (count === 1 && wasEmpty) sidebar.classList.add("open");
-      document.getElementById("betslipItems").innerHTML = betSlip.map((s, i) =>
-        '<div class="slip-item">' +
+      // Update accept odds toggle label
+      const aol = document.getElementById("acceptOddsLabel");
+      if (aol) aol.textContent = t("acceptOddsChanges");
+
+      document.getElementById("betslipItems").innerHTML = betSlip.map((s, i) => {
+        // Check if this match is live — show indicator
+        const match = matches.find(m => m.id === s.matchId);
+        const isLive = match && (getStatusClass(match.status || "Not Started", match.date) === "live" || getStatusClass(match.status || "Not Started", match.date) === "starting");
+        const liveTag = isLive ? '<span style="color:var(--red);font-size:0.6rem;font-weight:700;margin-left:0.3rem;">LIVE</span>' : '';
+        return '<div class="slip-item">' +
           '<button class="slip-item-remove" onclick="removeFromSlip(' + i + ')">X</button>' +
-          '<div class="slip-item-match">' + s.matchLabel + '</div>' +
+          '<div class="slip-item-match">' + s.matchLabel + liveTag + '</div>' +
           '<div class="slip-item-pick">' +
             '<span class="selection">' + s.marketLabel + ': ' + s.pickLabel + '</span>' +
             '<span class="odd">' + s.odd.toFixed(2) + '</span>' +
           '</div>' +
-        '</div>'
-      ).join("");
+        '</div>';
+      }).join("");
       updateSlipSummary();
     }
 

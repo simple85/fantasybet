@@ -1,23 +1,18 @@
 // ============================================
-// API-FOOTBALL DATA FETCHER (v3)
+// API-FOOTBALL DATA FETCHER (v3) — Clean API module
 // ============================================
-// Uses https://v3.football.api-sports.io
+// Pure API calling functions. No loops — server.js orchestrates.
 //
-// Flow:
-//   1. GET /fixtures?date=YYYY-MM-DD  → fixture IDs, league info, teams + logos, status
-//   2. GET /odds?fixture=X&bookmaker=8 → Bet365 odds for each fixture
-//   3. Combine & save to data/matches.json
+// Endpoints used:
+//   GET /fixtures?from=&to=       Fixture list (daily refresh)
+//   GET /fixtures?live=all        Live scores & status (every 5-15s)
+//   GET /odds?fixture=X           Pre-match Bet365 odds (every 2h)
+//   GET /odds/live                Live in-play odds (every 5s)
 //
-// Schedules (managed by server.js):
-//   - Full refresh (fixtures + odds): every 4h (00, 04, 08, 12, 16, 20)
-//   - Odds update (24h fixtures):     every 5 minutes
-//   - Odds update (other fixtures):   every 15 minutes
-//
-// Run standalone:
-//   node fetch-data.js --once      Full refresh
-//   node fetch-data.js --odds24    Odds for 24h fixtures
-//   node fetch-data.js --oddsext   Odds for extended fixtures
-//   node fetch-data.js --status    Check API status
+// CLI:
+//   node fetch-data.js --status
+//   node fetch-data.js --fixtures
+//   node fetch-data.js --live-odds
 
 const https = require("https");
 const fs = require("fs");
@@ -27,65 +22,14 @@ require("dotenv").config();
 const API_KEY = process.env.API_FOOTBALL_KEY;
 const DATA_DIR = path.join(__dirname, "data");
 const DATA_FILE = path.join(DATA_DIR, "matches.json");
-
-// ── Allowed bet IDs (whitelist) ──
-const ALLOWED_BET_IDS = new Set([
-  1,   // Match Winner
-  2,   // Home/Away
-  3,   // Second Half Winner
-  4,   // Asian Handicap
-  5,   // Goals Over/Under
-  6,   // Goals Over/Under First Half
-  7,   // HT/FT Double
-  8,   // Both Teams Score
-  10,  // Exact Score
-  12,  // Double Chance
-  13,  // First Half Winner
-  14,  // Team To Score First
-  15,  // Team To Score Last
-  16,  // Total - Exact Goals
-  17,  // Home Team Total Goals
-  18,  // Away Team Total Goals
-  19,  // Asian Handicap First Half
-  20,  // Double Chance - First Half
-  21,  // Odd/Even
-  22,  // Odd/Even - First Half
-  25,  // Both Teams Score - First Half
-  26,  // Both Teams Score - Second Half
-  29,  // Result/Total Goals First Half
-  31,  // Correct Score - First Half
-  34,  // First Goal Scorer
-  35,  // Last Goal Scorer
-  36,  // Anytime Goal Scorer
-  37,  // Home Goal Scorers
-  38,  // Away Goal Scorers
-  39,  // Player Assists
-  40,  // Player Fouls
-  42,  // First Card
-  43,  // Cards Over/Under
-  44,  // Home Total Cards
-  45,  // Corners Over/Under
-  46,  // Away Total Cards
-  47,  // Home Corners
-  48,  // Away Corners
-  49,  // Corners First Half
-  50,  // Goal Line
-  51,  // European Handicap
-  52,  // Home Odd/Even
-  53,  // Away Odd/Even
-  55,  // Goals Over/Under Second Half
-  63,  // Odd/Even - Second Half
-  72,  // Goal Line (1st Half)
-  77,  // Total Corners (1st Half)
-  85,  // Total Corners (3 way)
-  86,  // Cards European Handicap
-  87,  // Handicap 1st Half (European)
-]);
-
 const BET365_ID = 8;
 
-// ── Concurrency lock ──
-let _busy = false;
+// Pre-match bet IDs whitelist (Goal Line 50, 55 removed)
+const ALLOWED_BET_IDS = new Set([
+  1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 13, 14, 15, 16, 17, 18, 19,
+  20, 21, 22, 25, 26, 29, 31, 34, 35, 36, 37, 38, 39, 40,
+  42, 43, 44, 45, 46, 47, 48, 49, 51, 52, 53, 63, 72, 77, 85, 86, 87,
+]);
 
 // ── API Request ──
 function apiRequest(endpoint, params = {}) {
@@ -94,7 +38,6 @@ function apiRequest(endpoint, params = {}) {
       .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
       .join("&");
     const reqPath = `/${endpoint}${query ? "?" + query : ""}`;
-
     console.log(`  -> GET ${reqPath}`);
 
     const options = {
@@ -111,8 +54,7 @@ function apiRequest(endpoint, params = {}) {
         const body = Buffer.concat(chunks).toString();
         const remaining = res.headers["x-ratelimit-requests-remaining"];
         const limit = res.headers["x-ratelimit-requests-limit"];
-        if (remaining) console.log(`  Requests remaining: ${remaining}/${limit}`);
-
+        if (remaining) console.log(`  Remaining: ${remaining}/${limit}`);
         try {
           const data = JSON.parse(body);
           if (data.errors && Object.keys(data.errors).length > 0) {
@@ -134,29 +76,22 @@ function apiRequest(endpoint, params = {}) {
   });
 }
 
-// ── Check API status ──
-async function checkStatus() {
-  console.log("\nChecking API status...");
-  try {
-    const data = await apiRequest("status");
-    console.log("  Account:", JSON.stringify(data));
-    return data;
-  } catch (err) {
-    console.error("  Status check failed:", err.message);
-    return null;
-  }
-}
+// ── Helpers ──
+function formatDate(d) { return d.toISOString().split("T")[0]; }
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+function isApiKeyConfigured() { return !!API_KEY && API_KEY.length > 5; }
 
-// ── Fetch all fixtures for a given date ──
-async function fetchFixturesByDate(date) {
-  console.log(`\nFetching fixtures for ${date}...`);
-  const data = await apiRequest("fixtures", { date });
+// ── Fetch fixtures by date range (1 API call for multiple days) ──
+async function fetchFixturesByRange(from, to) {
+  console.log(`\n[FIXTURES] Range: ${from} to ${to}`);
+  const data = await apiRequest("fixtures", { from, to });
   const fixtures = data.response || [];
 
   const results = fixtures.map(item => ({
     id: item.fixture.id,
     date: item.fixture.date,
     status: item.fixture.status.long,
+    statusShort: item.fixture.status.short,
     elapsed: item.fixture.status.elapsed,
     league: {
       id: item.league.id,
@@ -165,16 +100,8 @@ async function fetchFixturesByDate(date) {
       logo: item.league.logo,
       flag: item.league.flag,
     },
-    home: {
-      id: item.teams.home.id,
-      name: item.teams.home.name,
-      logo: item.teams.home.logo,
-    },
-    away: {
-      id: item.teams.away.id,
-      name: item.teams.away.name,
-      logo: item.teams.away.logo,
-    },
+    home: { id: item.teams.home.id, name: item.teams.home.name, logo: item.teams.home.logo },
+    away: { id: item.teams.away.id, name: item.teams.away.name, logo: item.teams.away.logo },
     score: item.goals.home !== null ? { home: item.goals.home, away: item.goals.away } : null,
     bets: [],
   }));
@@ -183,12 +110,51 @@ async function fetchFixturesByDate(date) {
   return results;
 }
 
-// ── Fetch Bet365 odds for a single fixture ──
-async function fetchOddsForFixture(fixtureId) {
+// ── Fetch all live fixtures (1 API call) ──
+async function fetchLiveFixtures() {
+  const data = await apiRequest("fixtures", { live: "all" });
+  return (data.response || []).map(item => ({
+    id: item.fixture.id,
+    status: item.fixture.status.long,
+    statusShort: item.fixture.status.short,
+    elapsed: item.fixture.status.elapsed,
+    score: item.goals.home !== null ? { home: item.goals.home, away: item.goals.away } : null,
+  }));
+}
+
+// ── Fetch all live odds (1 API call — returns every in-play fixture's odds) ──
+// Response includes per-fixture: status (stopped/blocked/finished), odds with suspended flags
+async function fetchLiveOdds() {
+  const data = await apiRequest("odds/live");
+  const raw = data.response || [];
+
+  return raw.map(item => ({
+    fixtureId: item.fixture.id,
+    fixtureStatus: {
+      stopped: item.status?.stopped || false,
+      blocked: item.status?.blocked || false,
+      finished: item.status?.finished || false,
+    },
+    update: item.update,
+    odds: (item.odds || []).map(bet => ({
+      id: bet.id,
+      name: bet.name,
+      values: (bet.values || []).map(v => ({
+        value: v.value,
+        odd: v.odd,
+        handicap: v.handicap,
+        main: v.main,
+        suspended: v.suspended || false,
+      })),
+    })),
+  }));
+}
+
+// ── Fetch pre-match Bet365 odds for a single fixture ──
+async function fetchPreMatchOdds(fixtureId) {
   try {
     const data = await apiRequest("odds", { fixture: fixtureId, bookmaker: BET365_ID });
     const items = data.response || [];
-
     for (const item of items) {
       const bet365 = item.bookmakers?.find(b => b.id === BET365_ID);
       if (bet365) {
@@ -201,286 +167,59 @@ async function fetchOddsForFixture(fixtureId) {
   return [];
 }
 
-// ── Utils ──
-function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
-
-function formatDate(d) {
-  return d.toISOString().split("T")[0];
-}
-
+// ── File I/O ──
 function saveData(matches) {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-  const data = { lastUpdated: new Date().toISOString(), matchCount: matches.length, matches };
-  fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
-  console.log(`\nSaved ${matches.length} matches to data/matches.json`);
+  const payload = { lastUpdated: new Date().toISOString(), matchCount: matches.length, matches };
+  fs.writeFileSync(DATA_FILE, JSON.stringify(payload, null, 2));
 }
 
 function loadExistingData() {
   try {
     if (fs.existsSync(DATA_FILE)) {
-      const data = JSON.parse(fs.readFileSync(DATA_FILE, "utf-8"));
-      return data.matches || [];
+      return JSON.parse(fs.readFileSync(DATA_FILE, "utf-8")).matches || [];
     }
   } catch (e) {}
   return [];
 }
 
-// ── Finished status check ──
-const FINISHED_STATUSES = new Set([
-  "Match Finished", "After Extra Time", "After Penalty",
-  "Match Postponed", "Match Cancelled", "Match Abandoned",
-]);
-
-// ── MAIN TASKS ──
-
-/**
- * Full refresh: fetch fixtures for today + next 3 days, then fetch Bet365 odds for each.
- * Runs every 4 hours (00:00, 04:00, 08:00, 12:00, 16:00, 20:00).
- */
-async function fullRefresh() {
-  if (_busy) { console.log("[SKIP] Another task is running"); return; }
-  _busy = true;
-
-  console.log("\n" + "=".repeat(50));
-  console.log("FULL REFRESH — Fixtures + Odds (4 days)");
-  console.log("=".repeat(50));
-
-  if (!API_KEY || API_KEY.length < 5) {
-    console.log("No API key configured. Skipping fetch.");
-    _busy = false;
-    return;
-  }
-
-  try {
-    const today = new Date();
-    const dates = [];
-    // Include yesterday to catch late-night matches that may still be in progress
-    const yesterday = new Date(today);
-    yesterday.setDate(yesterday.getDate() - 1);
-    dates.push(formatDate(yesterday));
-    for (let i = 0; i < 4; i++) {
-      const d = new Date(today);
-      d.setDate(d.getDate() + i);
-      dates.push(formatDate(d));
-    }
-
-    // Step 1: Fetch fixtures for all 4 days
-    let allFixtures = [];
-    for (const date of dates) {
-      const fixtures = await fetchFixturesByDate(date);
-      allFixtures = allFixtures.concat(fixtures);
-      await sleep(400);
-    }
-
-    console.log(`\nTotal fixtures across ${dates.length} days: ${allFixtures.length}`);
-
-    // Step 2: Fetch Bet365 odds for each fixture (skip finished)
-    const toFetchOdds = allFixtures.filter(f => !FINISHED_STATUSES.has(f.status));
-    console.log(`\nFetching Bet365 odds for ${toFetchOdds.length} non-finished fixtures...`);
-
-    let oddsCount = 0;
-    for (let i = 0; i < toFetchOdds.length; i++) {
-      const fixture = toFetchOdds[i];
-      const bets = await fetchOddsForFixture(fixture.id);
-      if (bets.length > 0) {
-        fixture.bets = bets;
-        oddsCount++;
-      }
-      if ((i + 1) % 50 === 0) {
-        console.log(`  Progress: ${i + 1}/${toFetchOdds.length} (${oddsCount} with odds)`);
-      }
-      await sleep(350);
-    }
-
-    console.log(`\nOdds found for ${oddsCount}/${toFetchOdds.length} fixtures`);
-
-    saveData(allFixtures);
-    console.log("Full refresh complete");
-  } catch (err) {
-    console.error("\nFull refresh failed:", err.message);
-  }
-
-  _busy = false;
-}
-
-/**
- * Odds update for fixtures within 24 hours.
- * Runs every 5 minutes.
- * Also refreshes fixture statuses & live scores so live matches appear correctly.
- */
-async function oddsUpdate24h() {
-  if (_busy) { console.log("[SKIP] Another task is running"); return; }
-  _busy = true;
-
-  console.log("\n" + "=".repeat(50));
-  console.log("ODDS UPDATE — 24h fixtures (every 5 min)");
-  console.log("=".repeat(50));
-
-  if (!API_KEY || API_KEY.length < 5) { console.log("No API key. Skipping."); _busy = false; return; }
-
-  try {
-    const existing = loadExistingData();
-    if (existing.length === 0) {
-      console.log("No cached data, running full refresh...");
-      _busy = false;
-      return fullRefresh();
-    }
-
-    // ── Step 1: Refresh fixture statuses & scores for today + yesterday ──
-    // Today covers most live/upcoming matches.
-    // Yesterday catches late-night kickoffs (e.g. 23:00) that finish after midnight.
-    const now = new Date();
-    const today = formatDate(now);
-    const yesterday = formatDate(new Date(now.getTime() - 24 * 3600 * 1000));
-    const datesToRefresh = [today];
-
-    // Only fetch yesterday if we still have unfinished matches from that date
-    const hasUnfinishedYesterday = existing.some(m => {
-      const mDate = formatDate(new Date(m.date));
-      return mDate === yesterday && !FINISHED_STATUSES.has(m.status);
-    });
-    if (hasUnfinishedYesterday) datesToRefresh.unshift(yesterday);
-
-    console.log(`  Refreshing fixture statuses for: ${datesToRefresh.join(", ")}...`);
-    try {
-      let statusUpdates = 0;
-      let totalFetched = 0;
-      for (const date of datesToRefresh) {
-        const fixtureData = await apiRequest("fixtures", { date });
-        const freshFixtures = fixtureData.response || [];
-        totalFetched += freshFixtures.length;
-        for (const item of freshFixtures) {
-          const match = existing.find(m => m.id === item.fixture.id);
-          if (match) {
-            const newStatus = item.fixture.status.long;
-            const newElapsed = item.fixture.status.elapsed;
-            const newScore = item.goals.home !== null
-              ? { home: item.goals.home, away: item.goals.away }
-              : null;
-            if (match.status !== newStatus || match.elapsed !== newElapsed || JSON.stringify(match.score) !== JSON.stringify(newScore)) {
-              match.status = newStatus;
-              match.elapsed = newElapsed;
-              match.score = newScore;
-              statusUpdates++;
-            }
-          }
-        }
-        if (datesToRefresh.length > 1) await sleep(400);
-      }
-      console.log(`  Refreshed statuses: ${statusUpdates} changed out of ${totalFetched} fixtures`);
-    } catch (err) {
-      console.error("  Status refresh failed:", err.message);
-    }
-    await sleep(400);
-
-    // ── Step 2: Update odds for non-finished fixtures within 24h ──
-    const nowMs = Date.now();
-    const cutoff24h = nowMs + 24 * 3600 * 1000;
-
-    // Fixtures within next 24h or recently started (up to 6h ago), excluding finished
-    const targets = existing.filter(m => {
-      if (FINISHED_STATUSES.has(m.status)) return false;
-      const d = new Date(m.date).getTime();
-      return d <= cutoff24h && d >= nowMs - 6 * 3600 * 1000;
-    });
-
-    if (targets.length === 0) {
-      console.log("No eligible fixtures within 24h window for odds.");
-      saveData(existing); // still save status updates from step 1
-      _busy = false;
-      return;
-    }
-
-    console.log(`  Updating odds for ${targets.length} fixtures (within 24h)...`);
-    let updated = 0;
-    for (const match of targets) {
-      const bets = await fetchOddsForFixture(match.id);
-      if (bets.length > 0) {
-        match.bets = bets;
-        updated++;
-      }
-      await sleep(350);
-    }
-
-    saveData(existing);
-    console.log(`Odds updated for ${updated}/${targets.length} fixtures`);
-  } catch (err) {
-    console.error("\nOdds update (24h) failed:", err.message);
-  }
-
-  _busy = false;
-}
-
-/**
- * Odds update for fixtures beyond 24 hours.
- * Runs every 15 minutes.
- */
-async function oddsUpdateExtended() {
-  if (_busy) { console.log("[SKIP] Another task is running"); return; }
-  _busy = true;
-
-  console.log("\n" + "=".repeat(50));
-  console.log("ODDS UPDATE — Extended fixtures (every 15 min)");
-  console.log("=".repeat(50));
-
-  if (!API_KEY || API_KEY.length < 5) { console.log("No API key. Skipping."); _busy = false; return; }
-
-  try {
-    const existing = loadExistingData();
-    if (existing.length === 0) {
-      console.log("No cached data.");
-      _busy = false;
-      return;
-    }
-
-    const now = Date.now();
-    const cutoff24h = now + 24 * 3600 * 1000;
-
-    // Fixtures beyond 24h, excluding finished
-    const targets = existing.filter(m => {
-      if (FINISHED_STATUSES.has(m.status)) return false;
-      const d = new Date(m.date).getTime();
-      return d > cutoff24h;
-    });
-
-    if (targets.length === 0) {
-      console.log("No eligible fixtures beyond 24h window.");
-      _busy = false;
-      return;
-    }
-
-    console.log(`  Updating odds for ${targets.length} fixtures (beyond 24h)...`);
-    let updated = 0;
-    for (const match of targets) {
-      const bets = await fetchOddsForFixture(match.id);
-      if (bets.length > 0) {
-        match.bets = bets;
-        updated++;
-      }
-      await sleep(350);
-    }
-
-    saveData(existing);
-    console.log(`Odds updated for ${updated}/${targets.length} fixtures`);
-  } catch (err) {
-    console.error("\nOdds update (extended) failed:", err.message);
-  }
-
-  _busy = false;
-}
+// ── Exports ──
+module.exports = {
+  apiRequest,
+  fetchFixturesByRange,
+  fetchLiveFixtures,
+  fetchLiveOdds,
+  fetchPreMatchOdds,
+  saveData,
+  loadExistingData,
+  formatDate,
+  sleep,
+  isApiKeyConfigured,
+  ALLOWED_BET_IDS,
+  BET365_ID,
+};
 
 // ── CLI ──
-const args = process.argv.slice(2);
-if (args.includes("--status")) checkStatus();
-else if (args.includes("--once")) fullRefresh();
-else if (args.includes("--odds24")) oddsUpdate24h();
-else if (args.includes("--oddsext")) oddsUpdateExtended();
-else if (require.main === module && args.length > 0) {
-  console.log("Usage:");
-  console.log("  node fetch-data.js --status    Check API account");
-  console.log("  node fetch-data.js --once      Full refresh (fixtures + odds)");
-  console.log("  node fetch-data.js --odds24    Update odds for 24h fixtures");
-  console.log("  node fetch-data.js --oddsext   Update odds for extended fixtures");
+if (require.main === module) {
+  const args = process.argv.slice(2);
+  if (args.includes("--status")) {
+    apiRequest("status").then(d => console.log(JSON.stringify(d, null, 2))).catch(console.error);
+  } else if (args.includes("--fixtures")) {
+    const now = new Date();
+    const y = new Date(now); y.setDate(y.getDate() - 1);
+    const d2 = new Date(now); d2.setDate(d2.getDate() + 2);
+    fetchFixturesByRange(formatDate(y), formatDate(d2))
+      .then(f => { console.log(`Fetched ${f.length} fixtures`); saveData(f); })
+      .catch(console.error);
+  } else if (args.includes("--live-odds")) {
+    fetchLiveOdds().then(d => console.log(JSON.stringify(d, null, 2))).catch(console.error);
+  } else if (args.includes("--live-fixtures")) {
+    fetchLiveFixtures().then(d => console.log(JSON.stringify(d, null, 2))).catch(console.error);
+  } else {
+    console.log("Usage:");
+    console.log("  node fetch-data.js --status         Check API account");
+    console.log("  node fetch-data.js --fixtures        Fetch fixtures (yesterday to day-after-tomorrow)");
+    console.log("  node fetch-data.js --live-odds       Fetch live odds");
+    console.log("  node fetch-data.js --live-fixtures    Fetch live fixture statuses");
+  }
 }
-
-module.exports = { fullRefresh, oddsUpdate24h, oddsUpdateExtended };

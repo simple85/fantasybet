@@ -144,8 +144,8 @@ const BET_CATEGORIES = [
   },
   {
     id: "goals",
-    betIds: [5, 50, 6, 72, 55, 17, 18, 16, 8, 25, 26, 29],
-    // Goals O/U, Goal Line, Goals O/U 1st/2nd Half, Goal Line 1st Half,
+    betIds: [5, 6, 72, 17, 18, 16, 8, 25, 26, 29],
+    // Goals O/U, Goals O/U 1st/2nd Half,
     // Total Home/Away Goals, Exact Goals, BTS, BTS 1st/2nd, Result/Total 1st Half
   },
   {
