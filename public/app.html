@@ -622,6 +622,7 @@
     // ── Handle live scores from SSE (every 15s) ──
     function handleLiveScores(updates) {
       let anyChanged = false;
+      let statusChanged = false;
       updates.forEach(u => {
         const match = matches.find(m => m.id === u.id);
         if (!match) return;
@@ -635,17 +636,10 @@
 
         const newStatusClass = getStatusClass(u.status, match.date);
 
-        // If match just went live or just finished → full re-render to swap bet sources
-        if (prevStatusClass !== newStatusClass && (newStatusClass === "live" || newStatusClass === "finished")) {
-          const card = document.getElementById("card-" + u.id);
-          if (card) {
-            const showLeagueBadge = sortMode !== "league";
-            const tmp = document.createElement("div");
-            tmp.innerHTML = renderMatchCard(match, showLeagueBadge);
-            const newCard = tmp.firstElementChild;
-            card.replaceWith(newCard);
-          }
-          return; // card fully replaced, no need for partial DOM updates
+        // If match changed category (went live or finished) → need full view re-render
+        if (prevStatusClass !== newStatusClass) {
+          statusChanged = true;
+          return; // renderMatches() below will rebuild everything
         }
 
         // Update score in DOM
@@ -666,6 +660,11 @@
           }
         }
       });
+
+      // If any match changed status category, re-render the full view so it moves tabs
+      if (statusChanged) {
+        renderMatches();
+      }
 
       // Also refresh My Bets if visible (scores update there too)
       if (anyChanged && document.getElementById("mybetsPage").style.display !== "none") {

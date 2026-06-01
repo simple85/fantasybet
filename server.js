@@ -498,12 +498,20 @@ async function tickLiveFixtures() {
       }
     }
 
-    // Also check: matches we thought were live but aren't in the response anymore
-    // They may have finished between checks
+    // Matches we thought were live but aren't in the response anymore → mark as finished
     for (const match of matches) {
       if (LIVE_SHORT.has(match.statusShort) && !liveData.find(l => l.id === match.id)) {
-        // Match was live but not in live response — might have finished
-        // We'll catch this in the periodic settlement check
+        console.log(`[ENGINE] Match ${match.id} disappeared from live feed — marking as FT`);
+        match.status = "Match Finished";
+        match.statusShort = "FT";
+        updates.push({
+          id: match.id,
+          status: match.status,
+          statusShort: match.statusShort,
+          elapsed: 90,
+          score: match.score,
+        });
+        newlyFinished.push(match);
       }
     }
 
