@@ -68,7 +68,7 @@ const I18N = {
     void: "İptal",
     starting: "Başlıyor",
     ended: "Bitti",
-    acceptOddsChanges: "Değişen Oran",
+    acceptOddsChanges: "Değişen Oranı Onayla",
     oddsChanged: "Oranlar değişti",
     oddsChangedPrompt: "Seçtiğiniz oran değişti. Yeni oranla devam etmek ister misiniz?",
     betSuspended: "Bu bahis askıya alındı",

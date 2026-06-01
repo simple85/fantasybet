@@ -2,7 +2,7 @@
 <html lang="tr">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <title>BetZone</title>
   <link rel="stylesheet" href="css/style.css">
   <style>
@@ -37,7 +37,8 @@
       letter-spacing: 1px; margin-bottom: 0.5rem; font-weight: 700;
       text-align: center;
     }
-    .player-odds-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 0.25rem; justify-content: center; }
+    .player-odds-grid { display: flex; flex-wrap: wrap; gap: 0.25rem; justify-content: center; }
+    .player-odds-grid .player-odd-btn { flex: 0 1 calc(50% - 0.15rem); min-width: 130px; max-width: 220px; }
     .player-odd-btn {
       display: flex; justify-content: space-between; align-items: center;
       padding: 0.45rem 0.6rem; background: var(--odds-bg); border: 1px solid transparent;
@@ -53,15 +54,18 @@
     .match-status-badge.live { background: var(--red-dim); color: var(--red); }
     .match-status-badge.finished { background: rgba(90,100,120,0.15); color: var(--text-muted); }
     .match-status-badge.upcoming { background: var(--blue-dim); color: var(--blue); }
-    .score-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(60px, 1fr)); gap: 0.25rem; justify-content: center; }
+    .score-grid { display: flex; flex-wrap: wrap; gap: 0.25rem; justify-content: center; }
+    .score-grid .odd-btn { flex: 0 1 calc(25% - 0.2rem); min-width: 58px; max-width: 100px; }
     .odds-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(90px, 1fr));
+      display: flex;
+      flex-wrap: wrap;
       gap: 0.25rem;
       justify-content: center;
     }
     .odds-grid .odd-btn {
-      flex: none;
+      flex: 0 1 calc(33.33% - 0.2rem);
+      min-width: 80px;
+      max-width: 180px;
       min-height: 48px;
       justify-content: center;
       padding: 0.3rem 0.4rem;
@@ -107,7 +111,7 @@
       border: none;
       border-bottom: 1px solid var(--border);
       color: var(--text-primary);
-      font-size: 0.8rem;
+      font-size: 16px; /* must be >= 16px to prevent Safari mobile zoom on focus */
       outline: none;
       font-family: inherit;
     }
@@ -310,18 +314,18 @@
         </div>
         <div class="betslip-footer" id="betslipFooter" style="display:none;">
           <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.5rem;">
-            <div class="stake-input-group" style="flex:1;margin-bottom:0;">
+            <div class="stake-input-group" style="flex:0 1 55%;margin-bottom:0;">
               <label id="stakeLabel">Stake</label>
-              <input type="number" id="stakeInput" min="1" placeholder="0" oninput="updateSlipSummary()">
+              <input type="number" id="stakeInput" min="1" placeholder="0" style="font-size:16px;" oninput="updateSlipSummary()">
               <span class="currency">€</span>
             </div>
-            <div class="accept-odds-row">
+            <label class="accept-odds-row" for="acceptOddsToggle" style="flex:1;cursor:pointer;">
               <div class="accept-odds-toggle">
                 <input type="checkbox" id="acceptOddsToggle" checked onchange="acceptOddsChanges = this.checked">
                 <span class="slider"></span>
               </div>
-              <label for="acceptOddsToggle" id="acceptOddsLabel">Odds</label>
-            </div>
+              <span id="acceptOddsLabel" style="font-size:0.68rem;line-height:1.2;">Odds</span>
+            </label>
           </div>
           <div class="stake-presets">
             <button onclick="setStake(10)">10</button>
@@ -1138,6 +1142,22 @@
     function sortBetValues(values, betId) {
       const sorted = [...values];
 
+      // Handicap bets (4, 19, 51, 86) — sort by line ascending, Home before Draw before Away
+      if ([4, 19, 51, 86].includes(betId)) {
+        const sideOrder = { "Home": 0, "Draw": 1, "Away": 2 };
+        return sorted.sort((a, b) => {
+          const parseH = (v) => {
+            const s = String(v);
+            const m = s.match(/^(Home|Draw|Away)\s+([+-]?\d+\.?\d*)$/);
+            if (!m) return { side: 99, line: 0 };
+            return { side: sideOrder[m[1]] ?? 99, line: parseFloat(m[2]) };
+          };
+          const pa = parseH(a.value), pb = parseH(b.value);
+          if (pa.line !== pb.line) return pa.line - pb.line;
+          return pa.side - pb.side;
+        });
+      }
+
       // Score bets (10: Exact Score, 31: Correct Score 1st Half)
       // Sort: 0:0, 0:1, 0:2... 1:0, 1:1, 1:2... by total goals, then home goals
       if ([10, 31].includes(betId)) {
@@ -1152,8 +1172,8 @@
       }
 
       // Over/Under bets — group by line, Over before Under
-      // Bet IDs: 5, 6, 72, 45, 77
-      if ([5, 6, 72, 45, 77].includes(betId)) {
+      // Bet IDs: 5, 6, 72, 45, 77, 87(Total ShotOnGoal)
+      if ([5, 6, 72, 45, 77, 87].includes(betId)) {
         return sorted.sort((a, b) => {
           const parseOU = (v) => {
             const s = String(v);
@@ -1303,7 +1323,7 @@
         html += '<div class="odds-grid">';
         values.forEach(v => {
           // Translate and replace Home/Away with team names
-          let label = translateLabel(v.value, homeName, awayName);
+          let label = translateLabel(v.value, homeName, awayName, bet.id);
           // Shorten long labels
           if (label.length > 20) label = label.replace(homeName, shortName(homeName)).replace(awayName, shortName(awayName));
 
@@ -1339,12 +1359,14 @@
     function shortName(name) { return name?.split(' ').pop() || name; }
 
     // ── Translate common bet value labels ──
-    function translateLabel(val, homeName, awayName) {
+    function translateLabel(val, homeName, awayName, betId) {
       let s = String(val);
+      // Handicap bets use translated words (İç Saha / Deplasman) instead of team names
+      const useTranslatedHomeAway = [4, 19, 51, 86].includes(betId);
       // Exact keyword matches
       const keywords = {
-        "Home": homeName || t("home"),
-        "Away": awayName || t("away"),
+        "Home": useTranslatedHomeAway ? t("home") : (homeName || t("home")),
+        "Away": useTranslatedHomeAway ? t("away") : (awayName || t("away")),
         "Draw": t("draw"),
         "Yes": t("yes"),
         "No": t("no"),
