@@ -761,8 +761,10 @@ input {
 }
 
 .betslip-sidebar.open {
-  max-height: 70vh;
+  max-height: 100vh;
+  height: 100vh;
   overflow-y: auto;
+  border-radius: 0;
 }
 
 .betslip-header {
@@ -799,13 +801,31 @@ input {
 }
 
 .betslip-expand-arrow {
-  color: var(--text-muted);
-  font-size: 0.8rem;
-  transition: transform 0.3s;
+  color: var(--text-primary);
+  font-size: 1.2rem;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  transition: all 0.3s;
+  flex-shrink: 0;
+}
+
+.betslip-expand-arrow:hover {
+  background: var(--red-dim);
+  border-color: var(--red);
+  color: var(--red);
 }
 
 .betslip-sidebar.open .betslip-expand-arrow {
   transform: rotate(180deg);
+  background: var(--red-dim);
+  border-color: var(--red);
+  color: var(--red);
 }
 
 .betslip-count {
@@ -1006,34 +1026,37 @@ input {
 
 .betslip-summary {
   display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-  margin-bottom: 1rem;
+  gap: 0.5rem;
+  margin-bottom: 0.6rem;
+  align-items: stretch;
 }
 
-.betslip-summary .row {
-  display: flex;
-  justify-content: space-between;
-  font-size: 0.8rem;
+.betslip-summary .summary-col {
+  flex: 1;
+  text-align: center;
+  background: var(--bg-input);
+  border-radius: var(--radius-sm);
+  padding: 0.4rem 0.3rem;
 }
 
-.betslip-summary .row .label {
-  color: var(--text-secondary);
+.betslip-summary .summary-col .label {
+  font-size: 0.6rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  display: block;
+  margin-bottom: 0.15rem;
 }
 
-.betslip-summary .row .value {
-  font-weight: 600;
+.betslip-summary .summary-col .value {
+  font-weight: 700;
   font-family: var(--font-mono);
+  font-size: 0.85rem;
+  display: block;
 }
 
-.betslip-summary .row.total {
-  padding-top: 0.4rem;
-  border-top: 1px solid var(--border);
-}
-
-.betslip-summary .row.total .value {
+.betslip-summary .summary-col.total .value {
   color: var(--yellow);
-  font-size: 1rem;
 }
 
 .place-bet-btn {
@@ -1783,11 +1806,11 @@ input {
   }
 
   .player-odds-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, 1fr);
   }
 
   .score-grid {
-    grid-template-columns: repeat(auto-fill, minmax(70px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(58px, 1fr));
   }
 }
 
@@ -1885,19 +1908,15 @@ input {
 .accept-odds-row {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  padding: 0.5rem 0.75rem;
-  margin-bottom: 0.5rem;
-  background: var(--bg-input);
-  border-radius: var(--radius-sm);
-  font-size: 0.78rem;
-  color: var(--text-secondary);
+  gap: 0.4rem;
+  font-size: 0.72rem;
+  color: var(--text-muted);
 }
 
 .accept-odds-row label {
-  flex: 1;
   cursor: pointer;
   user-select: none;
+  white-space: nowrap;
 }
 
 .accept-odds-toggle {

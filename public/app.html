@@ -37,7 +37,7 @@
       letter-spacing: 1px; margin-bottom: 0.5rem; font-weight: 700;
       text-align: center;
     }
-    .player-odds-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 220px)); gap: 0.3rem; justify-content: center; }
+    .player-odds-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 0.25rem; justify-content: center; }
     .player-odd-btn {
       display: flex; justify-content: space-between; align-items: center;
       padding: 0.45rem 0.6rem; background: var(--odds-bg); border: 1px solid transparent;
@@ -53,17 +53,25 @@
     .match-status-badge.live { background: var(--red-dim); color: var(--red); }
     .match-status-badge.finished { background: rgba(90,100,120,0.15); color: var(--text-muted); }
     .match-status-badge.upcoming { background: var(--blue-dim); color: var(--blue); }
-    .score-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(70px, 100px)); gap: 0.3rem; justify-content: center; }
+    .score-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(60px, 1fr)); gap: 0.25rem; justify-content: center; }
     .odds-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(100px, 180px));
-      gap: 0.3rem;
+      grid-template-columns: repeat(auto-fill, minmax(90px, 1fr));
+      gap: 0.25rem;
       justify-content: center;
     }
     .odds-grid .odd-btn {
       flex: none;
-      min-height: 60px;
+      min-height: 48px;
       justify-content: center;
+      padding: 0.3rem 0.4rem;
+    }
+    .odds-grid .odd-btn .label {
+      font-size: 0.68rem;
+      line-height: 1.2;
+    }
+    .odds-grid .odd-btn .value {
+      font-size: 0.78rem;
     }
 
     /* ── League dropdown ── */
@@ -301,17 +309,19 @@
           <div id="betslipItems"></div>
         </div>
         <div class="betslip-footer" id="betslipFooter" style="display:none;">
-          <div class="accept-odds-row">
-            <label for="acceptOddsToggle" id="acceptOddsLabel">Accept odds changes</label>
-            <div class="accept-odds-toggle">
-              <input type="checkbox" id="acceptOddsToggle" checked onchange="acceptOddsChanges = this.checked">
-              <span class="slider"></span>
+          <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.5rem;">
+            <div class="stake-input-group" style="flex:1;margin-bottom:0;">
+              <label id="stakeLabel">Stake</label>
+              <input type="number" id="stakeInput" min="1" placeholder="0" oninput="updateSlipSummary()">
+              <span class="currency">€</span>
             </div>
-          </div>
-          <div class="stake-input-group">
-            <label id="stakeLabel">Stake</label>
-            <input type="number" id="stakeInput" min="1" placeholder="0" oninput="updateSlipSummary()">
-            <span class="currency">€</span>
+            <div class="accept-odds-row">
+              <div class="accept-odds-toggle">
+                <input type="checkbox" id="acceptOddsToggle" checked onchange="acceptOddsChanges = this.checked">
+                <span class="slider"></span>
+              </div>
+              <label for="acceptOddsToggle" id="acceptOddsLabel">Odds</label>
+            </div>
           </div>
           <div class="stake-presets">
             <button onclick="setStake(10)">10</button>
@@ -321,17 +331,16 @@
             <button onclick="setStake(1000)">1K</button>
           </div>
           <div class="betslip-summary">
-            <div class="row">
+            <div class="summary-col">
               <span class="label" id="totalOddsLabel">Total Odds</span>
               <span class="value" id="totalOddsValue">0.00</span>
             </div>
-            <div class="row total">
+            <div class="summary-col total">
               <span class="label" id="possibleWinLabel">Potential Win</span>
               <span class="value" id="possibleWinValue">0.00 €</span>
             </div>
           </div>
           <button class="place-bet-btn" id="placeBetBtn" onclick="placeBet()">PLACE BET</button>
-          <button class="clear-slip-btn" id="collapseSlipBtn" onclick="collapseSlip()">Collapse</button>
         </div>
       </aside>
     </div>
@@ -404,7 +413,9 @@
         }
       } catch (e) {}
       const apiData = await getMatches();
-      matches = apiData.filter(m => m.bets && m.bets.length > 0);
+      // Show matches that have odds OR are currently live/starting
+      const LIVE_SHORT_SET = new Set(["1H", "HT", "2H", "ET", "BT", "P", "INT", "LIVE"]);
+      matches = apiData.filter(m => (m.bets && m.bets.length > 0) || LIVE_SHORT_SET.has(m.statusShort));
       // Seed liveOddsMap from initial API response
       if (apiData.liveOdds && Array.isArray(apiData.liveOdds)) {
         apiData.liveOdds.forEach(lo => { liveOddsMap[lo.fixtureId] = lo; });
@@ -448,7 +459,7 @@
         console.log("[SSE] Fixtures updated");
         _matchesCache = null;
         const fresh = await getMatches();
-        matches = fresh.filter(m => m.bets && m.bets.length > 0);
+        matches = fresh.filter(m => (m.bets && m.bets.length > 0) || LIVE_SHORT_SET.has(m.statusShort));
         renderLeagueTabs();
         renderMatches();
       });
@@ -457,7 +468,7 @@
         console.log("[SSE] Pre-match odds updated");
         _matchesCache = null;
         const fresh = await getMatches();
-        matches = fresh.filter(m => m.bets && m.bets.length > 0);
+        matches = fresh.filter(m => (m.bets && m.bets.length > 0) || LIVE_SHORT_SET.has(m.statusShort));
         renderMatches();
       });
 
@@ -706,7 +717,7 @@
       document.getElementById("totalOddsLabel").textContent = t("totalOdds");
       document.getElementById("possibleWinLabel").textContent = t("possibleWin");
       document.getElementById("placeBetBtn").textContent = t("placeBet").toUpperCase();
-      document.getElementById("collapseSlipBtn").textContent = t("collapse");
+      document.getElementById("acceptOddsLabel").textContent = t("acceptOddsChanges");
       document.getElementById("activeBetsTitle").textContent = t("activeBets");
       document.getElementById("settledBetsTitle").textContent = t("settledBets");
     }
@@ -932,7 +943,7 @@
         sorted.forEach(m => { html += renderMatchCard(m, true); });
         container.innerHTML = html;
       } else {
-        // ── By Time / By League / Specific league: exclude live, finished & past ──
+        // ── By Time / By League / Specific league: upcoming only ──
         const now = new Date();
         const upcoming = filtered.filter(m => {
           const sc = getStatusClass(m.status || "Not Started", m.date);
@@ -945,10 +956,8 @@
         }
 
         if (sortMode === "league" || currentLeague !== "all") {
-          // Grouped by league (priority order)
           renderGroupedByLeague(upcoming, container);
         } else {
-          // Sorted by time (chronological)
           const sorted = [...upcoming].sort((a, b) => new Date(a.date) - new Date(b.date));
           let html = "";
           sorted.forEach(m => { html += renderMatchCard(m, true); });
@@ -1432,10 +1441,6 @@
       if (count === 0) sidebar.classList.remove("open");
       // Auto-expand on first bet only
       if (count === 1 && wasEmpty) sidebar.classList.add("open");
-      // Update accept odds toggle label
-      const aol = document.getElementById("acceptOddsLabel");
-      if (aol) aol.textContent = t("acceptOddsChanges");
-
       document.getElementById("betslipItems").innerHTML = betSlip.map((s, i) => {
         // Check if this match is live — show indicator
         const match = matches.find(m => m.id === s.matchId);
