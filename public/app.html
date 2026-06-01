@@ -508,8 +508,24 @@
         const prev = liveOddsMap[item.fixtureId];
         liveOddsMap[item.fixtureId] = item;
 
-        // Update visible odds in DOM with animations
-        updateOddsInDOM(item.fixtureId, item.odds, prev?.odds || []);
+        // Check if available markets changed (first live odds or bet IDs differ) → re-render card
+        const prevBetIds = prev ? (prev.odds || []).map(b => b.id).sort().join(",") : "";
+        const newBetIds = (item.odds || []).map(b => b.id).sort().join(",");
+        const card = document.getElementById("card-" + item.fixtureId);
+        if (card && (!prev || prevBetIds !== newBetIds)) {
+          // Markets changed — full card re-render to show only live markets
+          const match = matches.find(m => m.id === item.fixtureId);
+          if (match) {
+            const showLeagueBadge = sortMode !== "league";
+            const tmp = document.createElement("div");
+            tmp.innerHTML = renderMatchCard(match, showLeagueBadge);
+            const newCard = tmp.firstElementChild;
+            card.replaceWith(newCard);
+          }
+        } else {
+          // Same markets — in-place DOM update with animations
+          updateOddsInDOM(item.fixtureId, item.odds, prev?.odds || []);
+        }
 
         // Check betslip for odds changes and suspended bets
         checkBetslipOddsChanges(item);
@@ -610,11 +626,27 @@
         const match = matches.find(m => m.id === u.id);
         if (!match) return;
 
+        const prevStatusClass = getStatusClass(match.status, match.date);
         match.status = u.status;
         match.statusShort = u.statusShort;
         match.elapsed = u.elapsed;
         if (u.score) match.score = u.score;
         anyChanged = true;
+
+        const newStatusClass = getStatusClass(u.status, match.date);
+
+        // If match just went live or just finished → full re-render to swap bet sources
+        if (prevStatusClass !== newStatusClass && (newStatusClass === "live" || newStatusClass === "finished")) {
+          const card = document.getElementById("card-" + u.id);
+          if (card) {
+            const showLeagueBadge = sortMode !== "league";
+            const tmp = document.createElement("div");
+            tmp.innerHTML = renderMatchCard(match, showLeagueBadge);
+            const newCard = tmp.firstElementChild;
+            card.replaceWith(newCard);
+          }
+          return; // card fully replaced, no need for partial DOM updates
+        }
 
         // Update score in DOM
         const scoreHome = document.querySelector('[data-score-home="' + u.id + '"]');
@@ -1011,14 +1043,19 @@
       const awayName = match.away.name;
       const homeLogo = match.home.logo ? '<img class="team-logo" src="' + match.home.logo + '" alt="" onerror="this.style.display=\'none\'">' : '';
       const awayLogo = match.away.logo ? '<img class="team-logo" src="' + match.away.logo + '" alt="" onerror="this.style.display=\'none\'">' : '';
-      const bets = match.bets || [];
-
       // Status badge
       const status = match.status || "Not Started";
       const statusClass = getStatusClass(status, match.date);
 
       // Disable betting only for finished matches — live and starting matches allow betting
       const bettingDisabled = statusClass === "finished";
+
+      // For live matches, use ONLY live odds (not pre-match odds)
+      const liveData = liveOddsMap[mid];
+      const isLive = statusClass === "live";
+      const bets = isLive
+        ? (liveData && liveData.odds ? liveData.odds : [])
+        : (match.bets || []);
 
       // Score display with data attributes for SSE updates
       let scoreHtml = '<div class="match-vs">vs</div>';
