@@ -81,33 +81,52 @@ function formatDate(d) { return d.toISOString().split("T")[0]; }
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 function isApiKeyConfigured() { return !!API_KEY && API_KEY.length > 5; }
 
-// ── Fetch fixtures by date range (1 API call for multiple days) ──
+// ── Fetch fixtures by date range (per-date calls — from/to requires league+season) ──
 async function fetchFixturesByRange(from, to) {
-  console.log(`\n[FIXTURES] Range: ${from} to ${to}`);
-  const data = await apiRequest("fixtures", { from, to });
-  const fixtures = data.response || [];
+  // Build list of dates in range
+  const dates = [];
+  const start = new Date(from + "T00:00:00Z");
+  const end = new Date(to + "T00:00:00Z");
+  for (let d = new Date(start); d <= end; d.setUTCDate(d.getUTCDate() + 1)) {
+    dates.push(formatDate(new Date(d)));
+  }
 
-  const results = fixtures.map(item => ({
-    id: item.fixture.id,
-    date: item.fixture.date,
-    status: item.fixture.status.long,
-    statusShort: item.fixture.status.short,
-    elapsed: item.fixture.status.elapsed,
-    league: {
-      id: item.league.id,
-      name: item.league.name,
-      country: item.league.country,
-      logo: item.league.logo,
-      flag: item.league.flag,
-    },
-    home: { id: item.teams.home.id, name: item.teams.home.name, logo: item.teams.home.logo },
-    away: { id: item.teams.away.id, name: item.teams.away.name, logo: item.teams.away.logo },
-    score: item.goals.home !== null ? { home: item.goals.home, away: item.goals.away } : null,
-    bets: [],
-  }));
+  console.log(`\n[FIXTURES] Dates: ${dates.join(", ")}`);
+  const allResults = [];
+  const seenIds = new Set();
 
-  console.log(`  Found ${results.length} fixtures`);
-  return results;
+  for (const date of dates) {
+    const data = await apiRequest("fixtures", { date });
+    const fixtures = data.response || [];
+
+    for (const item of fixtures) {
+      if (seenIds.has(item.fixture.id)) continue;
+      seenIds.add(item.fixture.id);
+      allResults.push({
+        id: item.fixture.id,
+        date: item.fixture.date,
+        status: item.fixture.status.long,
+        statusShort: item.fixture.status.short,
+        elapsed: item.fixture.status.elapsed,
+        league: {
+          id: item.league.id,
+          name: item.league.name,
+          country: item.league.country,
+          logo: item.league.logo,
+          flag: item.league.flag,
+        },
+        home: { id: item.teams.home.id, name: item.teams.home.name, logo: item.teams.home.logo },
+        away: { id: item.teams.away.id, name: item.teams.away.name, logo: item.teams.away.logo },
+        score: item.goals.home !== null ? { home: item.goals.home, away: item.goals.away } : null,
+        bets: [],
+      });
+    }
+
+    if (dates.length > 1) await sleep(300); // small delay between date calls
+  }
+
+  console.log(`  Found ${allResults.length} unique fixtures across ${dates.length} days`);
+  return allResults;
 }
 
 // ── Fetch all live fixtures (1 API call) ──
