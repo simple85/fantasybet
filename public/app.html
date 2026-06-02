@@ -1472,10 +1472,27 @@
         html += '</div>';
       } else {
         // Standard odds grid
+        // For live bets: detect if "1"/"2" values mean team selection (vs goal counts)
+        const isTeamSelectBet = isLive && /which team|race to|last corner/i.test(bet.name);
         html += '<div class="odds-grid">';
         values.forEach(v => {
           // Translate and replace Home/Away with team names
           let label = translateLabel(v.value, homeName, awayName, bet.id, isLive);
+          // For team-selection bets, "1" = home team, "2" = away team
+          if (isTeamSelectBet) {
+            if (v.value === "1") label = homeName;
+            else if (v.value === "2") label = awayName;
+          }
+          // Append handicap/line number if present (live API stores it separately)
+          if (v.handicap != null && v.handicap !== "" && v.handicap !== "null" && !/\d/.test(label)) {
+            const hcNum = parseFloat(v.handicap);
+            if (!isNaN(hcNum)) {
+              // For Home/Draw/Away handicap bets, add +/- sign; for O/U just the number
+              const isHandicapVal = /^(Home|Away|Draw|İç Saha|Deplasman|Beraberlik)$/i.test(label.trim());
+              const hcStr = isHandicapVal && hcNum > 0 ? "+" + v.handicap : String(v.handicap);
+              label += " " + hcStr;
+            }
+          }
           // Shorten long labels
           if (label.length > 20) label = label.replace(homeName, shortName(homeName)).replace(awayName, shortName(awayName));
 
@@ -1526,8 +1543,7 @@
         "Even": t("even") || "Çift",
         "Over": t("over"),
         "Under": t("under"),
-        "1": homeName || "1",
-        "2": awayName || "2",
+        "Exactly": t("exactly") || "Tam",
         "No goal": t("noGoal") || "Gol Yok",
         "Neither": t("neither") || "Hiçbiri",
         "3 or more": "3+",
