@@ -1430,9 +1430,66 @@
       return sorted;
     }
 
+    // ── SORT LIVE BET VALUES (by value pattern + handicap field, not by ID) ──
+    function sortLiveBetValues(values, betName) {
+      const sorted = [...values];
+      if (sorted.length <= 1) return sorted;
+
+      // Detect value patterns from the actual data
+      const hasHandicap = sorted.some(v => v.handicap != null && v.handicap !== "" && v.handicap !== "null");
+      const valSet = new Set(sorted.map(v => v.value));
+
+      // ── Over/Under with handicap lines (Match Goals, Corners O/U, etc.) ──
+      if (hasHandicap && (valSet.has("Over") || valSet.has("Under"))) {
+        const typeOrder = { "Over": 0, "Under": 1, "Exactly": 2 };
+        return sorted.sort((a, b) => {
+          const ha = parseFloat(a.handicap) || 0;
+          const hb = parseFloat(b.handicap) || 0;
+          if (ha !== hb) return ha - hb;
+          return (typeOrder[a.value] ?? 99) - (typeOrder[b.value] ?? 99);
+        });
+      }
+
+      // ── Handicap with Home/Draw/Away + handicap lines (3-Way Handicap, Asian Handicap) ──
+      if (hasHandicap && (valSet.has("Home") || valSet.has("Away"))) {
+        const sideOrder = { "Home": 0, "Draw": 1, "Away": 2 };
+        return sorted.sort((a, b) => {
+          const ha = parseFloat(a.handicap) || 0;
+          const hb = parseFloat(b.handicap) || 0;
+          if (ha !== hb) return ha - hb;
+          return (sideOrder[a.value] ?? 99) - (sideOrder[b.value] ?? 99);
+        });
+      }
+
+      // ── Home/Draw/Away without handicap (1x2, To Win 2nd Half, etc.) ──
+      if (valSet.has("Home") && valSet.has("Away")) {
+        const order = { "Home": 0, "Draw": 1, "Away": 2 };
+        return sorted.sort((a, b) => (order[a.value] ?? 99) - (order[b.value] ?? 99));
+      }
+
+      // ── Double Chance (Home or Draw, etc.) ──
+      if (valSet.has("Home or Draw")) {
+        const order = { "Home or Draw": 0, "Home or Away": 1, "Draw or Away": 2, "Away or Draw": 2 };
+        return sorted.sort((a, b) => (order[a.value] ?? 99) - (order[b.value] ?? 99));
+      }
+
+      // ── Yes/No (BTS etc.) ──
+      if (valSet.has("Yes") && valSet.has("No")) {
+        return sorted.sort((a, b) => (a.value === "Yes" ? 0 : 1) - (b.value === "Yes" ? 0 : 1));
+      }
+
+      // ── Compound Home/Yes, Away/No etc. (Result/BTS) ──
+      if (sorted.some(v => v.value.includes("/"))) {
+        const compOrder = { "Home/Yes": 0, "Home/No": 1, "Draw/Yes": 2, "Draw/No": 3, "Away/Yes": 4, "Away/No": 5 };
+        return sorted.sort((a, b) => (compOrder[a.value] ?? 99) - (compOrder[b.value] ?? 99));
+      }
+
+      return sorted;
+    }
+
     // ── RENDER A SINGLE BET BLOCK ──
     function renderBetBlock(bet, match, mid, disabled, isLive) {
-      const values = sortBetValues(bet.values, bet.id);
+      const values = isLive ? sortLiveBetValues(bet.values, bet.name) : sortBetValues(bet.values, bet.id);
       const homeName = match.home.name;
       const awayName = match.away.name;
       const isPlayerBet = !isLive && [34, 35, 36, 37, 38, 39, 40].includes(bet.id);
