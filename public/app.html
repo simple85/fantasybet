@@ -1062,47 +1062,87 @@
         scoreHtml = '<div class="match-score"><span data-score-home="' + mid + '">' + match.score.home + '</span><span class="divider">-</span><span data-score-away="' + mid + '">' + match.score.away + '</span></div>';
       }
 
-      // ── Primary odds: Match Winner (1), Goals O/U 2.5 (5), BTTS (8) ──
+      // ── Primary odds ──
       let primaryHtml = '';
-      const matchWinner = bets.find(b => b.id === 1);
-      const goalsOU = bets.find(b => b.id === 5);
-      const btts = bets.find(b => b.id === 8);
+      if (isLive) {
+        // Live: find primary markets by NAME pattern (live API uses different IDs)
+        const lw = bets.find(b => /^draw no bet$/i.test(b.name)) ||
+                   bets.find(b => /^1x2\b/i.test(b.name) && !/half/i.test(b.name));
+        const lou = bets.find(b => /^match goals$/i.test(b.name)) ||
+                    bets.find(b => /^over\/under line$/i.test(b.name));
 
-      if (matchWinner) {
-        const h = matchWinner.values.find(v => v.value === "Home");
-        const d = matchWinner.values.find(v => v.value === "Draw");
-        const a = matchWinner.values.find(v => v.value === "Away");
-        primaryHtml += '<div class="odds-group"><div class="odds-group-title">1X2</div><div class="odds-row">';
-        if (h) primaryHtml += oddBtn(mid, 1, "Home", "1", h.odd, homeName, bettingDisabled);
-        if (d) primaryHtml += oddBtn(mid, 1, "Draw", "X", d.odd, t("draw"), bettingDisabled);
-        if (a) primaryHtml += oddBtn(mid, 1, "Away", "2", a.odd, awayName, bettingDisabled);
-        primaryHtml += '</div></div>';
-      }
-
-      if (goalsOU) {
-        const ov = goalsOU.values.find(v => v.value === "Over 2.5");
-        const un = goalsOU.values.find(v => v.value === "Under 2.5");
-        if (ov && un) {
-          primaryHtml += '<div class="odds-group"><div class="odds-group-title">' + t("over") + '/' + t("under") + ' 2.5</div><div class="odds-row">';
-          primaryHtml += oddBtn(mid, 5, "Over 2.5", t("over"), ov.odd, null, bettingDisabled);
-          primaryHtml += oddBtn(mid, 5, "Under 2.5", t("under"), un.odd, null, bettingDisabled);
+        if (lw) {
+          const h = lw.values.find(v => v.value === "Home");
+          const d = lw.values.find(v => v.value === "Draw");
+          const a = lw.values.find(v => v.value === "Away");
+          const title = d ? "1X2" : (t("home") + "/" + t("away"));
+          primaryHtml += '<div class="odds-group"><div class="odds-group-title">' + title + '</div><div class="odds-row">';
+          if (h) primaryHtml += oddBtn(mid, lw.id, "Home", "1", h.odd, homeName, bettingDisabled);
+          if (d) primaryHtml += oddBtn(mid, lw.id, "Draw", "X", d.odd, t("draw"), bettingDisabled);
+          if (a) primaryHtml += oddBtn(mid, lw.id, "Away", "2", a.odd, awayName, bettingDisabled);
           primaryHtml += '</div></div>';
         }
-      }
+        if (lou) {
+          // Find the O/U line closest to 2.5
+          const overVals = lou.values.filter(v => v.value.startsWith("Over"));
+          const best = overVals.reduce((best, v) => {
+            const line = parseFloat(v.value.replace("Over ", ""));
+            const bestLine = best ? parseFloat(best.value.replace("Over ", "")) : Infinity;
+            return Math.abs(line - 2.5) < Math.abs(bestLine - 2.5) ? v : best;
+          }, null);
+          if (best) {
+            const line = best.value.replace("Over ", "");
+            const un = lou.values.find(v => v.value === "Under " + line);
+            if (un) {
+              primaryHtml += '<div class="odds-group"><div class="odds-group-title">' + t("over") + '/' + t("under") + ' ' + line + '</div><div class="odds-row">';
+              primaryHtml += oddBtn(mid, lou.id, best.value, t("over"), best.odd, null, bettingDisabled);
+              primaryHtml += oddBtn(mid, lou.id, un.value, t("under"), un.odd, null, bettingDisabled);
+              primaryHtml += '</div></div>';
+            }
+          }
+        }
+      } else {
+        // Pre-match: find by Bet365 IDs
+        const matchWinner = bets.find(b => b.id === 1);
+        const goalsOU = bets.find(b => b.id === 5);
+        const btts = bets.find(b => b.id === 8);
 
-      if (btts) {
-        const y = btts.values.find(v => v.value === "Yes");
-        const n = btts.values.find(v => v.value === "No");
-        if (y && n) {
-          primaryHtml += '<div class="odds-group"><div class="odds-group-title">' + betName(8, "Both Teams Score") + '</div><div class="odds-row">';
-          primaryHtml += oddBtn(mid, 8, "Yes", t("yes"), y.odd, null, bettingDisabled);
-          primaryHtml += oddBtn(mid, 8, "No", t("no"), n.odd, null, bettingDisabled);
+        if (matchWinner) {
+          const h = matchWinner.values.find(v => v.value === "Home");
+          const d = matchWinner.values.find(v => v.value === "Draw");
+          const a = matchWinner.values.find(v => v.value === "Away");
+          primaryHtml += '<div class="odds-group"><div class="odds-group-title">1X2</div><div class="odds-row">';
+          if (h) primaryHtml += oddBtn(mid, 1, "Home", "1", h.odd, homeName, bettingDisabled);
+          if (d) primaryHtml += oddBtn(mid, 1, "Draw", "X", d.odd, t("draw"), bettingDisabled);
+          if (a) primaryHtml += oddBtn(mid, 1, "Away", "2", a.odd, awayName, bettingDisabled);
           primaryHtml += '</div></div>';
+        }
+
+        if (goalsOU) {
+          const ov = goalsOU.values.find(v => v.value === "Over 2.5");
+          const un = goalsOU.values.find(v => v.value === "Under 2.5");
+          if (ov && un) {
+            primaryHtml += '<div class="odds-group"><div class="odds-group-title">' + t("over") + '/' + t("under") + ' 2.5</div><div class="odds-row">';
+            primaryHtml += oddBtn(mid, 5, "Over 2.5", t("over"), ov.odd, null, bettingDisabled);
+            primaryHtml += oddBtn(mid, 5, "Under 2.5", t("under"), un.odd, null, bettingDisabled);
+            primaryHtml += '</div></div>';
+          }
+        }
+
+        if (btts) {
+          const y = btts.values.find(v => v.value === "Yes");
+          const n = btts.values.find(v => v.value === "No");
+          if (y && n) {
+            primaryHtml += '<div class="odds-group"><div class="odds-group-title">' + betName(8, "Both Teams Score") + '</div><div class="odds-row">';
+            primaryHtml += oddBtn(mid, 8, "Yes", t("yes"), y.odd, null, bettingDisabled);
+            primaryHtml += oddBtn(mid, 8, "No", t("no"), n.odd, null, bettingDisabled);
+            primaryHtml += '</div></div>';
+          }
         }
       }
 
       // ── Expanded markets ──
-      const expandedHtml = buildExpandedMarkets(match, bets, mid, bettingDisabled);
+      const expandedHtml = buildExpandedMarkets(match, bets, mid, bettingDisabled, isLive);
 
       const liveMinute = statusClass === "live" && match.elapsed ? match.elapsed + "'" : null;
       const statusText = statusClass === "starting" ? t("starting") : (liveMinute ? liveMinute : translateStatus(status));
@@ -1141,23 +1181,41 @@
     }
 
     // ── BUILD EXPANDED MARKETS ──
-    function buildExpandedMarkets(match, bets, mid, disabled) {
+    function buildExpandedMarkets(match, bets, mid, disabled, isLive) {
       const tabs = [];
       const panels = [];
 
-      // Group bets by category
-      BET_CATEGORIES.forEach(cat => {
-        const catBets = bets.filter(b => cat.betIds.includes(b.id));
-        if (catBets.length === 0) return;
-
-        let html = '';
-        catBets.forEach(bet => {
-          html += renderBetBlock(bet, match, mid, disabled);
+      if (isLive) {
+        // Live: auto-categorize by bet NAME (live API uses different IDs than pre-match)
+        const catMap = { result: [], goals: [], handicap: [], corners: [], cards: [], odd_even: [] };
+        bets.forEach(bet => {
+          const cat = categorizeLiveBet(bet.name);
+          if (catMap[cat]) catMap[cat].push(bet);
         });
-
-        tabs.push({ id: cat.id, label: tm(cat.id) });
-        panels.push({ id: cat.id, html: html });
-      });
+        const LIVE_CAT_ORDER = ["result", "goals", "handicap", "corners", "cards", "odd_even"];
+        LIVE_CAT_ORDER.forEach(catId => {
+          const catBets = catMap[catId];
+          if (!catBets || catBets.length === 0) return;
+          let html = '';
+          catBets.forEach(bet => {
+            html += renderBetBlock(bet, match, mid, disabled, true);
+          });
+          tabs.push({ id: catId, label: tm(catId) });
+          panels.push({ id: catId, html: html });
+        });
+      } else {
+        // Pre-match: group by BET_CATEGORIES config (Bet365 IDs)
+        BET_CATEGORIES.forEach(cat => {
+          const catBets = bets.filter(b => cat.betIds.includes(b.id));
+          if (catBets.length === 0) return;
+          let html = '';
+          catBets.forEach(bet => {
+            html += renderBetBlock(bet, match, mid, disabled, false);
+          });
+          tabs.push({ id: cat.id, label: tm(cat.id) });
+          panels.push({ id: cat.id, html: html });
+        });
+      }
 
       if (tabs.length === 0) return '';
 
@@ -1172,6 +1230,63 @@
       });
 
       return html;
+    }
+
+    // ── Auto-categorize live bet by name ──
+    function categorizeLiveBet(name) {
+      const n = name.toLowerCase();
+      if (n.includes("corner")) return "corners";
+      if (n.includes("card")) return "cards";
+      if (n.includes("odd") || n.includes("even")) return "odd_even";
+      if (n.includes("handicap")) return "handicap";
+      if (n.includes("goal") || n.includes("score") || n.includes("over/under") || n.includes("both teams")) return "goals";
+      return "result";
+    }
+
+    // ── Translate live bet name to current language ──
+    const LIVE_BET_NAMES = {
+      tr: {
+        "1x2 (1st Half)": "1x2 (İlk Yarı)",
+        "1x2 - 80 minutes": "1x2 - 80 Dakika",
+        "Match Goals": "Maç Gol Sayısı",
+        "Over/Under Line": "Gol Üst/Alt",
+        "Over/Under (1st Half)": "Gol Üst/Alt (İlk Yarı)",
+        "3-Way Handicap": "3 Yollu Handikap",
+        "Double Chance": "Çifte Şans",
+        "Draw No Bet": "Beraberlikte İade",
+        "Asian Handicap (1st Half)": "Handikap (İlk Yarı)",
+        "European Handicap (1st Half)": "Handikap Sonucu (İlk Yarı)",
+        "Match Corners": "Toplam Köşe Vuruşu",
+        "Total Corners": "Toplam Köşe Vuruşu",
+        "Total Corners (3way) (2nd Half)": "Köşe Vuruşu (İkinci Yarı)",
+        "Total Corners (3 way) (1st Half)": "Köşe Vuruşu (İlk Yarı)",
+        "Both Teams To Score (2nd Half)": "Karşılıklı Gol (İkinci Yarı)",
+        "Result / Both Teams To Score": "Sonuç / Karşılıklı Gol",
+        "To Win 2nd Half": "İkinci Yarı Kazananı",
+        "Away Team Goals": "Deplasman Gol Sayısı",
+        "How many goals will Away Team score?": "Deplasman Kaç Gol Atar?",
+        "Last Corner": "Son Köşe Vuruşu",
+        "Race to the 7th corner?": "7. Köşe Vuruşu Yarışı",
+        "Race to the 9th corner?": "9. Köşe Vuruşu Yarışı",
+        "Which team will score the 2nd goal?": "2. Golü Kim Atar?",
+        "Which team will score the 6th corner? (2 Way)": "6. Köşe Vuruşu Kim Atar?",
+      },
+      de: {
+        "1x2 (1st Half)": "1x2 (1. Halbzeit)",
+        "Match Goals": "Tore im Spiel",
+        "Over/Under Line": "Über/Unter",
+        "3-Way Handicap": "3-Wege-Handicap",
+        "Double Chance": "Doppelte Chance",
+        "Draw No Bet": "Unentschieden Keine Wette",
+        "Match Corners": "Ecken Gesamt",
+        "Total Corners": "Ecken Gesamt",
+      }
+    };
+
+    function translateLiveBetName(name) {
+      const lang = getCurrentLang();
+      if (LIVE_BET_NAMES[lang]?.[name]) return LIVE_BET_NAMES[lang][name];
+      return name;
     }
 
     // ── SORT BET VALUES LOGICALLY ──
@@ -1316,16 +1431,17 @@
     }
 
     // ── RENDER A SINGLE BET BLOCK ──
-    function renderBetBlock(bet, match, mid, disabled) {
+    function renderBetBlock(bet, match, mid, disabled, isLive) {
       const values = sortBetValues(bet.values, bet.id);
       const homeName = match.home.name;
       const awayName = match.away.name;
-      const isPlayerBet = [34, 35, 36, 37, 38, 39, 40].includes(bet.id);
-      const isScoreBet = [10, 31].includes(bet.id);
+      const isPlayerBet = !isLive && [34, 35, 36, 37, 38, 39, 40].includes(bet.id);
+      const isScoreBet = !isLive && [10, 31].includes(bet.id);
       const disAttr = disabled ? ' disabled' : '';
       const disClass = disabled ? ' disabled' : '';
 
-      const translatedName = betName(bet.id, bet.name);
+      // Live bets: use API name (translated). Pre-match: use our betName() lookup.
+      const translatedName = isLive ? translateLiveBetName(bet.name) : betName(bet.id, bet.name);
       let html = '<div class="market-block"><div class="market-block-title">' + translatedName + '</div>';
 
       if (isPlayerBet) {
@@ -1359,7 +1475,7 @@
         html += '<div class="odds-grid">';
         values.forEach(v => {
           // Translate and replace Home/Away with team names
-          let label = translateLabel(v.value, homeName, awayName, bet.id);
+          let label = translateLabel(v.value, homeName, awayName, bet.id, isLive);
           // Shorten long labels
           if (label.length > 20) label = label.replace(homeName, shortName(homeName)).replace(awayName, shortName(awayName));
 
@@ -1395,10 +1511,10 @@
     function shortName(name) { return name?.split(' ').pop() || name; }
 
     // ── Translate common bet value labels ──
-    function translateLabel(val, homeName, awayName, betId) {
+    function translateLabel(val, homeName, awayName, betId, isLive) {
       let s = String(val);
-      // Handicap bets use translated words (İç Saha / Deplasman) instead of team names
-      const useTranslatedHomeAway = [4, 19, 51, 86].includes(betId);
+      // Handicap bets and ALL live bets use translated words (İç Saha / Deplasman) instead of team names
+      const useTranslatedHomeAway = isLive || [4, 19, 51, 86].includes(betId);
       // Exact keyword matches
       const keywords = {
         "Home": useTranslatedHomeAway ? t("home") : (homeName || t("home")),
@@ -1410,6 +1526,14 @@
         "Even": t("even") || "Çift",
         "Over": t("over"),
         "Under": t("under"),
+        "1": homeName || "1",
+        "2": awayName || "2",
+        "No goal": t("noGoal") || "Gol Yok",
+        "Neither": t("neither") || "Hiçbiri",
+        "3 or more": "3+",
+        "Home or Draw": (useTranslatedHomeAway ? t("home") : homeName) + "/" + t("draw"),
+        "Away or Draw": (useTranslatedHomeAway ? t("away") : awayName) + "/" + t("draw"),
+        "Home or Away": (useTranslatedHomeAway ? t("home") : homeName) + "/" + (useTranslatedHomeAway ? t("away") : awayName),
       };
       // Handle compound formats like "Home/Draw", "Away/Away", "Draw/Home"
       if (s.includes("/")) {
