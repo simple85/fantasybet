@@ -325,65 +325,172 @@ function evaluateSelection(sel, match) {
   const pick = sel.pick;
   const betId = sel.betId;
 
+  // Halftime score (may be null for older data)
+  const ht = match.htScore || null;
+  const htH = ht ? ht.home : null;
+  const htA = ht ? ht.away : null;
+  const htTotal = ht ? htH + htA : null;
+  // Second half derived from FT - HT
+  const h2H = ht ? h - htH : null;
+  const h2A = ht ? a - htA : null;
+  const h2Total = ht ? (h2H + h2A) : null;
+
+  // ── Helper: evaluate Over/Under pick ──
+  function evalOU(goalCount, pickStr) {
+    const m = pickStr.match(/^(Over|Under)\s+([\d.]+)$/);
+    if (!m) return null;
+    const line = parseFloat(m[2]);
+    return m[1] === "Over" ? (goalCount > line ? "won" : "lost") : (goalCount < line ? "won" : "lost");
+  }
+
+  // ── Helper: evaluate Home/Draw/Away result ──
+  function evalResult(homeGoals, awayGoals, pickStr) {
+    if (pickStr === "Home") return homeGoals > awayGoals ? "won" : "lost";
+    if (pickStr === "Draw") return homeGoals === awayGoals ? "won" : "lost";
+    if (pickStr === "Away") return awayGoals > homeGoals ? "won" : "lost";
+    return null;
+  }
+
+  // ── Helper: evaluate Asian Handicap pick (e.g., "Home -1.5") ──
+  function evalAsianHandicap(homeGoals, awayGoals, pickStr) {
+    const m = pickStr.match(/^(Home|Away)\s+([+-]?\d+\.?\d*)$/);
+    if (!m) return null;
+    const side = m[1];
+    const line = parseFloat(m[2]);
+    // Apply handicap to the selected side
+    const adjusted = side === "Home" ? (homeGoals + line) - awayGoals : (awayGoals + line) - homeGoals;
+    if (adjusted > 0) return "won";
+    if (adjusted < 0) return "lost";
+    return "void"; // push — exact 0 = stake refund
+  }
+
+  // ═══ FULL-TIME BETS (only need final score) ═══
+
   // Match Winner (1) / Home/Away (2)
-  if (betId === 1 || betId === 2) {
-    if (pick === "Home") return h > a ? "won" : "lost";
-    if (pick === "Draw") return h === a ? "won" : "lost";
-    if (pick === "Away") return a > h ? "won" : "lost";
-  }
-  // Goals Over/Under (5)
-  if (betId === 5) {
-    const m = pick.match(/^(Over|Under)\s+([\d.]+)$/);
-    if (m) {
-      const line = parseFloat(m[2]);
-      return m[1] === "Over" ? (total > line ? "won" : "lost") : (total < line ? "won" : "lost");
-    }
-  }
-  // Home Total Goals (17)
-  if (betId === 17) {
-    const m = pick.match(/^(Over|Under)\s+([\d.]+)$/);
-    if (m) {
-      const line = parseFloat(m[2]);
-      return m[1] === "Over" ? (h > line ? "won" : "lost") : (h < line ? "won" : "lost");
-    }
-  }
-  // Away Total Goals (18)
-  if (betId === 18) {
-    const m = pick.match(/^(Over|Under)\s+([\d.]+)$/);
-    if (m) {
-      const line = parseFloat(m[2]);
-      return m[1] === "Over" ? (a > line ? "won" : "lost") : (a < line ? "won" : "lost");
-    }
-  }
+  if (betId === 1 || betId === 2) return evalResult(h, a, pick);
+
+  // Goals Over/Under (5) / Goal Line (50)
+  if (betId === 5 || betId === 50) return evalOU(total, pick);
+
   // Both Teams Score (8)
   if (betId === 8) {
     const both = h > 0 && a > 0;
     return pick === "Yes" ? (both ? "won" : "lost") : (!both ? "won" : "lost");
   }
+
   // Exact Score (10)
   if (betId === 10) return pick === h + ":" + a ? "won" : "lost";
+
   // Double Chance (12)
   if (betId === 12) {
     if (pick === "Home/Draw") return h >= a ? "won" : "lost";
     if (pick === "Home/Away") return h !== a ? "won" : "lost";
     if (pick === "Draw/Away") return a >= h ? "won" : "lost";
   }
+
   // Exact Goal Number (16)
   if (betId === 16) {
     const num = parseInt(pick);
     if (!isNaN(num)) return total === num ? "won" : "lost";
     if (pick.includes("+")) { const min = parseInt(pick); if (!isNaN(min)) return total >= min ? "won" : "lost"; }
   }
+
+  // Home Total Goals O/U (17)
+  if (betId === 17) return evalOU(h, pick);
+
+  // Away Total Goals O/U (18)
+  if (betId === 18) return evalOU(a, pick);
+
   // Odd/Even (21)
   if (betId === 21) return pick === "Odd" ? (total % 2 !== 0 ? "won" : "lost") : (total % 2 === 0 ? "won" : "lost");
+
   // Home Odd/Even (52)
   if (betId === 52) return pick === "Odd" ? (h % 2 !== 0 ? "won" : "lost") : (h % 2 === 0 ? "won" : "lost");
+
   // Away Odd/Even (53)
   if (betId === 53) return pick === "Odd" ? (a % 2 !== 0 ? "won" : "lost") : (a % 2 === 0 ? "won" : "lost");
 
-  // Bet types we can't auto-settle (corners, cards, players, handicap, halftime-based)
-  // For demo: treat as "won" so bets don't stay pending forever
-  return "won";
+  // Asian Handicap full-time (4)
+  if (betId === 4) return evalAsianHandicap(h, a, pick);
+
+  // Handicap Result 3-way (51) — e.g., "Home -1", "Draw -1", "Away -1"
+  if (betId === 51) {
+    const m = pick.match(/^(Home|Draw|Away)\s+([+-]?\d+\.?\d*)$/);
+    if (m) {
+      const line = parseFloat(m[2]);
+      const adjH = h + (m[1] !== "Away" ? line : 0);
+      const adjA = a + (m[1] === "Away" ? line : 0);
+      // For 3-way handicap the handicap applies to Home side
+      const hAdj = h + line;
+      return evalResult(hAdj, a, m[1]);
+    }
+  }
+
+  // ═══ FIRST-HALF BETS (need htScore) ═══
+
+  if (ht === null) return null; // can't evaluate without HT data — stays pending
+
+  // First Half Winner (13)
+  if (betId === 13) return evalResult(htH, htA, pick);
+
+  // Goals O/U First Half (6) / Goal Line 1st Half (55)
+  if (betId === 6 || betId === 55) return evalOU(htTotal, pick);
+
+  // HT/FT (7) — e.g., "Home/Away" means home winning at HT, away winning at FT
+  if (betId === 7) {
+    const parts = pick.split("/");
+    if (parts.length === 2) {
+      const htResult = htH > htA ? "Home" : htH < htA ? "Away" : "Draw";
+      const ftResult = h > a ? "Home" : h < a ? "Away" : "Draw";
+      return (parts[0] === htResult && parts[1] === ftResult) ? "won" : "lost";
+    }
+  }
+
+  // Asian Handicap First Half (19)
+  if (betId === 19) return evalAsianHandicap(htH, htA, pick);
+
+  // Double Chance First Half (20)
+  if (betId === 20) {
+    if (pick === "Home/Draw") return htH >= htA ? "won" : "lost";
+    if (pick === "Home/Away") return htH !== htA ? "won" : "lost";
+    if (pick === "Draw/Away") return htA >= htH ? "won" : "lost";
+  }
+
+  // Odd/Even First Half (22)
+  if (betId === 22) return pick === "Odd" ? (htTotal % 2 !== 0 ? "won" : "lost") : (htTotal % 2 === 0 ? "won" : "lost");
+
+  // BTS First Half (25)
+  if (betId === 25) {
+    const both = htH > 0 && htA > 0;
+    return pick === "Yes" ? (both ? "won" : "lost") : (!both ? "won" : "lost");
+  }
+
+  // BTS Second Half (26)
+  if (betId === 26) {
+    const both = h2H > 0 && h2A > 0;
+    return pick === "Yes" ? (both ? "won" : "lost") : (!both ? "won" : "lost");
+  }
+
+  // Correct Score First Half (31)
+  if (betId === 31) return pick === htH + ":" + htA ? "won" : "lost";
+
+  // Odd/Even Second Half (63)
+  if (betId === 63) return pick === "Odd" ? (h2Total % 2 !== 0 ? "won" : "lost") : (h2Total % 2 === 0 ? "won" : "lost");
+
+  // Goals O/U Second Half (72)
+  if (betId === 72) return evalOU(h2Total, pick);
+
+  // Win Both Halves (3) — "Home" means home wins both halves separately
+  if (betId === 3) {
+    if (pick === "Home") return (htH > htA && h2H > h2A) ? "won" : "lost";
+    if (pick === "Away") return (htA > htH && h2A > h2H) ? "won" : "lost";
+    if (pick === "Yes") return ((htH > htA && h2H > h2A) || (htA > htH && h2A > h2H)) ? "won" : "lost";
+    if (pick === "No") return (!((htH > htA && h2H > h2A) || (htA > htH && h2A > h2H))) ? "won" : "lost";
+  }
+
+  // ═══ UNEVALUABLE (corners, cards, players, shots — no stat data) ═══
+  // Void these bets (refund stake) since we can't determine the outcome
+  return "void";
 }
 
 function settleBets() {
@@ -411,8 +518,10 @@ function settleBets() {
       if (!SETTLED_STATUSES_BET.has(match.status)) { allFinished = false; continue; }
 
       const result = evaluateSelection(sel, match);
+      if (result === null) { allFinished = false; continue; } // missing data (e.g., no HT score) — wait
       sel.result = result;
-      if (result === "lost") anyLost = true;
+      if (result === "void") anyVoid = true;
+      else if (result === "lost") anyLost = true;
     }
 
     if (anyVoid) {
@@ -484,6 +593,7 @@ async function tickLiveFixtures() {
       match.statusShort = live.statusShort;
       match.elapsed = live.elapsed;
       if (live.score) match.score = live.score;
+      if (live.htScore) match.htScore = live.htScore;
 
       updates.push({
         id: live.id,
@@ -559,7 +669,10 @@ async function dailyRefresh() {
           nf.statusShort = existing.statusShort;
           nf.elapsed = existing.elapsed;
           nf.score = existing.score;
+          nf.htScore = existing.htScore;
         }
+        // Preserve halftime score from memory if available
+        if (existing.htScore && !nf.htScore) nf.htScore = existing.htScore;
         // Keep existing pre-match odds if new fixture has none
         if ((!nf.bets || nf.bets.length === 0) && existing.bets && existing.bets.length > 0) {
           nf.bets = existing.bets;

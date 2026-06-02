@@ -118,6 +118,7 @@ async function fetchFixturesByRange(from, to) {
         home: { id: item.teams.home.id, name: item.teams.home.name, logo: item.teams.home.logo },
         away: { id: item.teams.away.id, name: item.teams.away.name, logo: item.teams.away.logo },
         score: item.goals.home !== null ? { home: item.goals.home, away: item.goals.away } : null,
+        htScore: item.score?.halftime?.home !== null ? { home: item.score.halftime.home, away: item.score.halftime.away } : null,
         bets: [],
       });
     }
@@ -138,6 +139,7 @@ async function fetchLiveFixtures() {
     statusShort: item.fixture.status.short,
     elapsed: item.fixture.status.elapsed,
     score: item.goals.home !== null ? { home: item.goals.home, away: item.goals.away } : null,
+    htScore: item.score?.halftime?.home !== null ? { home: item.score.halftime.home, away: item.score.halftime.away } : null,
   }));
 }
 
@@ -155,7 +157,7 @@ async function fetchLiveOdds() {
       finished: item.status?.finished || false,
     },
     update: item.update,
-    odds: (item.odds || []).map(bet => ({
+    odds: (item.odds || []).filter(bet => ALLOWED_BET_IDS.has(bet.id)).map(bet => ({
       id: bet.id,
       name: bet.name,
       values: (bet.values || []).map(v => ({
