@@ -1,0 +1,32 @@
+[
+  {
+    "id": "BZMPWMAFNZ",
+    "userId": "test1",
+    "timestamp": "2026-06-02T12:32:04.559Z",
+    "selections": [
+      {
+        "matchId": 1547815,
+        "matchLabel": "Podbeskidzie - Śląsk Wrocław II",
+        "betId": 25,
+        "marketLabel": "Üst",
+        "pick": "Over 2.5",
+        "pickLabel": "Over 2.5",
+        "odd": 1.666
+      },
+      {
+        "matchId": 1547815,
+        "matchLabel": "Podbeskidzie - Śląsk Wrocław II",
+        "betId": 35,
+        "marketLabel": "To Win 2nd Half",
+        "pick": "Draw",
+        "pickLabel": "Draw",
+        "odd": 6.5
+      }
+    ],
+    "stake": 10,
+    "totalOdds": 10.828999999999999,
+    "possibleWin": 108.28999999999999,
+    "status": "pending",
+    "settledAt": null
+  }
+]

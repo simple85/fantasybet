@@ -160,13 +160,19 @@ async function fetchLiveOdds() {
     odds: (item.odds || []).filter(bet => ALLOWED_BET_IDS.has(bet.id)).map(bet => ({
       id: bet.id,
       name: bet.name,
-      values: (bet.values || []).map(v => ({
-        value: v.value,
-        odd: v.odd,
-        handicap: v.handicap,
-        main: v.main,
-        suspended: v.suspended || false,
-      })),
+      values: (bet.values || []).map(v => {
+        // Combine value + handicap into a single value so each option is unique
+        // e.g. "Over" + handicap "2.5" → "Over 2.5", "Home" + handicap "3" → "Home 3"
+        const hasHC = v.handicap != null && v.handicap !== "" && String(v.handicap) !== "null";
+        const combinedValue = hasHC ? v.value + " " + v.handicap : v.value;
+        return {
+          value: combinedValue,
+          odd: v.odd,
+          handicap: v.handicap,   // keep original for sorting
+          main: v.main,
+          suspended: v.suspended || false,
+        };
+      }),
     })),
   }));
 }

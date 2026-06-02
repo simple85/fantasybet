@@ -100,6 +100,11 @@ if (matches.length > 0) {
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
 
+// ── /logout route: serve app.html which auto-detects and logs out ──
+app.get("/logout", (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "app.html"));
+});
+
 // ══════════════════════════════════════════
 // HELPERS: read/write users & bets
 // ══════════════════════════════════════════
@@ -488,6 +493,88 @@ function evaluateSelection(sel, match) {
     if (pick === "No") return (!((htH > htA && h2H > h2A) || (htA > htH && h2A > h2H))) ? "won" : "lost";
   }
 
+  // ═══ NAME-BASED FALLBACK (live API uses different bet IDs) ═══
+  // Live bets store the API bet name in sel.marketLabel — use it to evaluate
+  const name = (sel.marketLabel || "").toLowerCase();
+
+  // ── Full-time result bets ──
+  if (/\b(1x2|match winner)\b/.test(name) && !/half/.test(name)) return evalResult(h, a, pick);
+  if (/\bdraw no bet\b/.test(name) && !/half/.test(name)) {
+    if (pick === "Home") return h > a ? "won" : h === a ? "void" : "lost";
+    if (pick === "Away") return a > h ? "won" : h === a ? "void" : "lost";
+  }
+  if (/\bdouble chance\b/.test(name) && !/half/.test(name)) {
+    if (pick === "Home or Draw") return h >= a ? "won" : "lost";
+    if (pick === "Home or Away") return h !== a ? "won" : "lost";
+    if (pick === "Away or Draw" || pick === "Draw or Away") return a >= h ? "won" : "lost";
+  }
+
+  // ── Goals Over/Under ──
+  if (/\b(match goals|over.?under line)\b/.test(name)) return evalOU(total, pick);
+  if (/\bhome.*(goals?|total)\b/.test(name) || /\b(goals?|total).*home\b/.test(name)) return evalOU(h, pick);
+  if (/\baway.*(goals?|total)\b/.test(name) || /\b(goals?|total).*away\b/.test(name)) return evalOU(a, pick);
+
+  // ── Both Teams Score ──
+  if (/\bboth teams?.*(score|goal)\b/.test(name) && !/half/.test(name)) {
+    const both = h > 0 && a > 0;
+    return pick === "Yes" ? (both ? "won" : "lost") : (!both ? "won" : "lost");
+  }
+
+  // ── Odd/Even ──
+  if (/\bodd.?even\b/.test(name) && !/half/.test(name)) {
+    return pick === "Odd" ? (total % 2 !== 0 ? "won" : "lost") : (total % 2 === 0 ? "won" : "lost");
+  }
+
+  // ── Asian Handicap ──
+  if (/\basian handicap\b/.test(name) && !/half/.test(name)) return evalAsianHandicap(h, a, pick);
+
+  // ── 3-Way Handicap ──
+  if (/\b3.?way handicap\b/.test(name) && !/half/.test(name)) {
+    const m3 = pick.match(/^(Home|Draw|Away)\s+([+-]?\d+\.?\d*)$/);
+    if (m3) {
+      const line = parseFloat(m3[2]);
+      const hAdj = h + line;
+      return evalResult(hAdj, a, m3[1]);
+    }
+  }
+
+  // ── Exact Goals / How Many Goals ──
+  if (/\bhow many goals\b/.test(name) || /\bexact.*(goals?|number)\b/.test(name)) {
+    const num = parseInt(pick);
+    if (!isNaN(num)) return total === num ? "won" : "lost";
+    if (pick === "No goal" || pick === "No Goal") return total === 0 ? "won" : "lost";
+    if (pick.includes("+") || pick.includes("or more")) {
+      const min = parseInt(pick); if (!isNaN(min)) return total >= min ? "won" : "lost";
+    }
+  }
+
+  // ── Second half bets (need HT score) ──
+  if (ht === null && /\b(2nd half|second half)\b/.test(name)) return null; // wait for HT data
+
+  if (/\b(to win|winner).*(2nd|second) half\b/.test(name) || /\b(2nd|second) half.*(winner|result)\b/.test(name)) {
+    if (h2H === null) return null;
+    return evalResult(h2H, h2A, pick);
+  }
+  if (/\b(over.?under|goals?).*(2nd|second) half\b/.test(name) || /\b(2nd|second) half.*(over.?under|goals?)\b/.test(name)) {
+    if (h2Total === null) return null;
+    return evalOU(h2Total, pick);
+  }
+  if (/\bboth teams?.*(score|goal).*(2nd|second) half\b/.test(name)) {
+    if (h2H === null) return null;
+    const both = h2H > 0 && h2A > 0;
+    return pick === "Yes" ? (both ? "won" : "lost") : (!both ? "won" : "lost");
+  }
+
+  // ── First half bets ──
+  if (ht === null && /\b(1st half|first half)\b/.test(name)) return null; // wait for HT data
+
+  if (/\b(to win|winner).*(1st|first) half\b/.test(name) || /\b(1st|first) half.*(winner|result)\b/.test(name)) {
+    return evalResult(htH, htA, pick);
+  }
+  if (/\b(over.?under|goals?).*(1st|first) half\b/.test(name) || /\b(1st|first) half.*(over.?under|goals?)\b/.test(name)) {
+    return evalOU(htTotal, pick);
+  }
+
   // ═══ UNEVALUABLE (corners, cards, players, shots — no stat data) ═══
   // Void these bets (refund stake) since we can't determine the outcome
   return "void";
@@ -524,17 +611,38 @@ function settleBets() {
       else if (result === "lost") anyLost = true;
     }
 
-    if (anyVoid) {
-      bet.status = "void";
-      bet.settledAt = new Date().toISOString();
-      const user = users.find(u => u.id === bet.userId);
-      if (user) user.credits += bet.stake;
-      settled++;
-    } else if (anyLost) {
+    if (!allFinished) continue; // wait for all matches to finish
+
+    if (anyLost) {
+      // Any lost selection = entire bet lost (void selections don't save it)
       bet.status = "lost";
       bet.settledAt = new Date().toISOString();
       settled++;
-    } else if (allFinished) {
+    } else if (anyVoid) {
+      // All non-void selections won — recalculate odds excluding void selections
+      const allVoid = bet.selections.every(s => s.result === "void");
+      if (allVoid) {
+        // Every selection void = full refund
+        bet.status = "void";
+        bet.settledAt = new Date().toISOString();
+        const user = users.find(u => u.id === bet.userId);
+        if (user) user.credits += bet.stake;
+      } else {
+        // Partial void: multiply only won selections' odds, void = 1.00
+        const adjustedOdds = bet.selections.reduce((acc, s) => {
+          return acc * (s.result === "void" ? 1.0 : s.odd);
+        }, 1.0);
+        const payout = Math.round(bet.stake * adjustedOdds * 100) / 100;
+        bet.status = "won";
+        bet.totalOdds = Math.round(adjustedOdds * 100) / 100;
+        bet.possibleWin = payout;
+        bet.settledAt = new Date().toISOString();
+        const user = users.find(u => u.id === bet.userId);
+        if (user) user.credits += payout;
+      }
+      settled++;
+    } else {
+      // All selections won, no voids
       bet.status = "won";
       bet.settledAt = new Date().toISOString();
       const user = users.find(u => u.id === bet.userId);

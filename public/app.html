@@ -593,7 +593,7 @@
 
         // If suspended or not found → remove from betslip
         if (!liveVal || liveVal.suspended || status.stopped || status.blocked) {
-          const removedLabel = sel.matchLabel + " — " + sel.marketLabel + ": " + sel.pickLabel;
+          const removedLabel = sel.matchLabel + " — " + translateSelection(sel);
           betSlip.splice(i, 1);
           showStackToast(removedLabel + " " + t("betRemoved"), "error");
           changed = true;
@@ -696,7 +696,7 @@
       const html = '<div class="odds-change-modal" onclick="closeOddsChangeModal()">' +
         '<div class="odds-change-box" onclick="event.stopPropagation()">' +
           '<h3>⚠ ' + t("oddsChanged") + '</h3>' +
-          '<p>' + sel.matchLabel + '<br>' + sel.marketLabel + ': ' + sel.pickLabel + '</p>' +
+          '<p>' + sel.matchLabel + '<br>' + translateSelection(sel) + '</p>' +
           '<div class="odds-change-detail">' +
             '<span class="old-odd">' + sel.odd.toFixed(2) + '</span>' +
             '<span class="arrow">&rarr;</span>' +
@@ -777,6 +777,11 @@
     }
 
     function logout() { localStorage.removeItem("betzone_user"); window.location.href = "index.html"; }
+
+    // ── /logout URL support (mobile) ──
+    if (window.location.pathname.endsWith("/logout") || window.location.hash === "#logout") {
+      logout();
+    }
 
     // ── Featured league names (shown as primary buttons when they have matches) ──
     const MAX_FEATURED = 2; // buttons shown outside dropdown (+ All Leagues + dropdown = 4 total)
@@ -1283,10 +1288,11 @@
       }
     };
 
-    function translateLiveBetName(name) {
+    function translateLiveBetName(name, fallback) {
       const lang = getCurrentLang();
       if (LIVE_BET_NAMES[lang]?.[name]) return LIVE_BET_NAMES[lang][name];
-      return name;
+      // If fallback is explicitly false, return null (used by translateSelection to try betName() next)
+      return fallback === false ? null : name;
     }
 
     // ── SORT BET VALUES LOGICALLY ──
@@ -1435,46 +1441,47 @@
       const sorted = [...values];
       if (sorted.length <= 1) return sorted;
 
-      // Detect value patterns from the actual data
+      // Detect value patterns — values are now combined ("Over 2.5", "Home 3") so extract base keyword
       const hasHandicap = sorted.some(v => v.handicap != null && v.handicap !== "" && v.handicap !== "null");
-      const valSet = new Set(sorted.map(v => v.value));
+      const baseVal = v => String(v.value).replace(/\s+[-+]?\d[\d.]*$/, ""); // "Over 2.5" → "Over", "Home 3" → "Home"
+      const baseSet = new Set(sorted.map(v => baseVal(v)));
 
       // ── Over/Under with handicap lines (Match Goals, Corners O/U, etc.) ──
-      if (hasHandicap && (valSet.has("Over") || valSet.has("Under"))) {
+      if (hasHandicap && (baseSet.has("Over") || baseSet.has("Under"))) {
         const typeOrder = { "Over": 0, "Under": 1, "Exactly": 2 };
         return sorted.sort((a, b) => {
           const ha = parseFloat(a.handicap) || 0;
           const hb = parseFloat(b.handicap) || 0;
           if (ha !== hb) return ha - hb;
-          return (typeOrder[a.value] ?? 99) - (typeOrder[b.value] ?? 99);
+          return (typeOrder[baseVal(a)] ?? 99) - (typeOrder[baseVal(b)] ?? 99);
         });
       }
 
       // ── Handicap with Home/Draw/Away + handicap lines (3-Way Handicap, Asian Handicap) ──
-      if (hasHandicap && (valSet.has("Home") || valSet.has("Away"))) {
+      if (hasHandicap && (baseSet.has("Home") || baseSet.has("Away"))) {
         const sideOrder = { "Home": 0, "Draw": 1, "Away": 2 };
         return sorted.sort((a, b) => {
           const ha = parseFloat(a.handicap) || 0;
           const hb = parseFloat(b.handicap) || 0;
           if (ha !== hb) return ha - hb;
-          return (sideOrder[a.value] ?? 99) - (sideOrder[b.value] ?? 99);
+          return (sideOrder[baseVal(a)] ?? 99) - (sideOrder[baseVal(b)] ?? 99);
         });
       }
 
       // ── Home/Draw/Away without handicap (1x2, To Win 2nd Half, etc.) ──
-      if (valSet.has("Home") && valSet.has("Away")) {
+      if (baseSet.has("Home") && baseSet.has("Away")) {
         const order = { "Home": 0, "Draw": 1, "Away": 2 };
-        return sorted.sort((a, b) => (order[a.value] ?? 99) - (order[b.value] ?? 99));
+        return sorted.sort((a, b) => (order[baseVal(a)] ?? 99) - (order[baseVal(b)] ?? 99));
       }
 
       // ── Double Chance (Home or Draw, etc.) ──
-      if (valSet.has("Home or Draw")) {
+      if (baseSet.has("Home or Draw")) {
         const order = { "Home or Draw": 0, "Home or Away": 1, "Draw or Away": 2, "Away or Draw": 2 };
         return sorted.sort((a, b) => (order[a.value] ?? 99) - (order[b.value] ?? 99));
       }
 
       // ── Yes/No (BTS etc.) ──
-      if (valSet.has("Yes") && valSet.has("No")) {
+      if (baseSet.has("Yes") && baseSet.has("No")) {
         return sorted.sort((a, b) => (a.value === "Yes" ? 0 : 1) - (b.value === "Yes" ? 0 : 1));
       }
 
@@ -1539,16 +1546,6 @@
           if (isTeamSelectBet) {
             if (v.value === "1") label = homeName;
             else if (v.value === "2") label = awayName;
-          }
-          // Append handicap/line number if present (live API stores it separately)
-          if (v.handicap != null && v.handicap !== "" && v.handicap !== "null" && !/\d/.test(label)) {
-            const hcNum = parseFloat(v.handicap);
-            if (!isNaN(hcNum)) {
-              // For Home/Draw/Away handicap bets, add +/- sign; for O/U just the number
-              const isHandicapVal = /^(Home|Away|Draw|İç Saha|Deplasman|Beraberlik)$/i.test(label.trim());
-              const hcStr = isHandicapVal && hcNum > 0 ? "+" + v.handicap : String(v.handicap);
-              label += " " + hcStr;
-            }
           }
           // Shorten long labels
           if (label.length > 20) label = label.replace(homeName, shortName(homeName)).replace(awayName, shortName(awayName));
@@ -1616,14 +1613,23 @@
           return keywords[trimmed] !== undefined ? keywords[trimmed] : trimmed;
         }).join("/");
       }
-      // Handle "Over X.X" / "Under X.X"
+      // Handle "Over X.X" / "Under X.X" (pre-match or live combined value)
       const ouMatch = s.match(/^(Over|Under)\s+(.+)$/);
       if (ouMatch) {
         return keywords[ouMatch[1]] + " " + ouMatch[2];
       }
+      // Handle "Home N" / "Away N" / "Draw N" (live combined handicap values)
+      const hcMatch = s.match(/^(Home|Away|Draw)\s+([-+]?\d[\d.]*)$/);
+      if (hcMatch) {
+        const translated = keywords[hcMatch[1]] || hcMatch[1];
+        const hcNum = parseFloat(hcMatch[2]);
+        const hcStr = hcNum > 0 ? "+" + hcMatch[2] : hcMatch[2];
+        return translated + " " + hcStr;
+      }
       // Handle "Exactly N"
-      if (s.startsWith("Exactly ")) {
-        return s; // keep as-is, it's a number label
+      const exactMatch = s.match(/^Exactly\s+(.+)$/);
+      if (exactMatch) {
+        return (keywords["Exactly"] || "Exactly") + " " + exactMatch[1];
       }
       // Direct keyword match
       if (keywords[s] !== undefined) return keywords[s];
@@ -1651,6 +1657,19 @@
     }
 
     // ── BET SLIP ──
+    // Translate a stored selection for display (betslip sidebar + My Bets)
+    function translateSelection(sel) {
+      const match = matches.find(m => m.id === sel.matchId);
+      const homeName = match ? match.home.name : "";
+      const awayName = match ? match.away.name : "";
+      // Translate market name (try live name table first, fall back to betName lookup)
+      const mkt = translateLiveBetName(sel.marketLabel, false) ||
+                  betName(sel.betId, sel.marketLabel);
+      // Translate pick label (Over 2.5 → Üst 2.5, Home → İç Saha, etc.)
+      const pickT = translateLabel(sel.pick, homeName, awayName, sel.betId, true);
+      return mkt + ': ' + pickT;
+    }
+
     function isSelected(matchId, betId, pick) {
       return betSlip.some(s => s.matchId === matchId && s.betId === betId && s.pick === pick);
     }
@@ -1705,7 +1724,7 @@
           '<button class="slip-item-remove" onclick="removeFromSlip(' + i + ')">X</button>' +
           '<div class="slip-item-match">' + s.matchLabel + liveTag + '</div>' +
           '<div class="slip-item-pick">' +
-            '<span class="selection">' + s.marketLabel + ': ' + s.pickLabel + '</span>' +
+            '<span class="selection">' + translateSelection(s) + '</span>' +
             '<span class="odd">' + s.odd.toFixed(2) + '</span>' +
           '</div>' +
         '</div>';
@@ -1838,7 +1857,7 @@
 
             return '<div class="bet-card-selection">' +
               '<div><span class="match">' + s.matchLabel + '</span>' + scoreHtml + statusBadge + timeInfo + '</div>' +
-              '<div style="margin-top:0.2rem;"><strong>' + s.marketLabel + ': ' + s.pickLabel + '</strong>' + resultIcon +
+              '<div style="margin-top:0.2rem;"><strong>' + translateSelection(s) + '</strong>' + resultIcon +
               '<span style="color:var(--accent);font-family:var(--font-mono);margin-left:0.5rem;">' + s.odd.toFixed(2) + '</span></div>' +
             '</div>';
           }).join("") +
