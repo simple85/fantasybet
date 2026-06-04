@@ -14,7 +14,7 @@ const DEFAULT_LANG = "tr";
 const SITE_NAME = "BetZone";
 
 // Minimum bahis miktari / Minimum bet amount
-const MIN_BET = 1;
+const MIN_BET = 5;
 
 // Maksimum bahis miktari / Maximum bet amount
 const MAX_BET = 50000;

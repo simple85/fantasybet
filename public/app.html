@@ -304,6 +304,10 @@
           </div>
           <span class="betslip-expand-arrow" id="slipArrow">&#9650;</span>
         </div>
+        <div class="betslip-mode-toggle" id="betslipModeToggle" style="display:none;">
+          <button class="mode-btn active" id="modeCombined" onclick="setBetSlipMode('combined')">Combined</button>
+          <button class="mode-btn" id="modeSystem" onclick="setBetSlipMode('system')">System</button>
+        </div>
         <div class="betslip-body" id="betslipBody">
           <div class="betslip-empty" id="betslipEmpty">
             <div class="icon">🎫</div>
@@ -362,6 +366,7 @@
     // ── STATE ──
     let currentUser = null;
     let betSlip = [];
+    let betSlipMode = "combined"; // "combined" or "system"
     let currentLeague = "all";
     let sortMode = "time"; // "time" or "league"
     let matches = [];
@@ -1080,11 +1085,11 @@
           const h = lw.values.find(v => v.value === "Home");
           const d = lw.values.find(v => v.value === "Draw");
           const a = lw.values.find(v => v.value === "Away");
-          const title = d ? "1X2" : (t("home") + "/" + t("away"));
-          primaryHtml += '<div class="odds-group"><div class="odds-group-title">' + title + '</div><div class="odds-row">';
-          if (h) primaryHtml += oddBtn(mid, lw.id, "Home", "1", h.odd, lw.name, bettingDisabled);
-          if (d) primaryHtml += oddBtn(mid, lw.id, "Draw", "X", d.odd, lw.name, bettingDisabled);
-          if (a) primaryHtml += oddBtn(mid, lw.id, "Away", "2", a.odd, lw.name, bettingDisabled);
+          const lwTitle = translateLiveBetName(lw.name);
+          primaryHtml += '<div class="odds-group"><div class="odds-group-title">' + lwTitle + '</div><div class="odds-row">';
+          if (h) primaryHtml += oddBtn(mid, lw.id, "Home", t("home"), h.odd, lw.name, bettingDisabled);
+          if (d) primaryHtml += oddBtn(mid, lw.id, "Draw", t("draw"), d.odd, lw.name, bettingDisabled);
+          if (a) primaryHtml += oddBtn(mid, lw.id, "Away", t("away"), a.odd, lw.name, bettingDisabled);
           primaryHtml += '</div></div>';
         }
         if (lou) {
@@ -1099,9 +1104,10 @@
             const line = best.value.replace("Over ", "");
             const un = lou.values.find(v => v.value === "Under " + line);
             if (un) {
-              primaryHtml += '<div class="odds-group"><div class="odds-group-title">' + t("over") + '/' + t("under") + ' ' + line + '</div><div class="odds-row">';
-              primaryHtml += oddBtn(mid, lou.id, best.value, t("over"), best.odd, lou.name, bettingDisabled);
-              primaryHtml += oddBtn(mid, lou.id, un.value, t("under"), un.odd, lou.name, bettingDisabled);
+              const louTitle = translateLiveBetName(lou.name);
+              primaryHtml += '<div class="odds-group"><div class="odds-group-title">' + louTitle + '</div><div class="odds-row">';
+              primaryHtml += oddBtn(mid, lou.id, best.value, t("over") + ' ' + line, best.odd, lou.name, bettingDisabled);
+              primaryHtml += oddBtn(mid, lou.id, un.value, t("under") + ' ' + line, un.odd, lou.name, bettingDisabled);
               primaryHtml += '</div></div>';
             }
           }
@@ -1712,6 +1718,13 @@
       sidebar.classList.toggle("has-bets", count > 0);
       document.getElementById("betslipEmpty").style.display = count === 0 ? "flex" : "none";
       document.getElementById("betslipFooter").style.display = count > 0 ? "block" : "none";
+      // Show mode toggle when there are 2+ selections
+      const modeToggle = document.getElementById("betslipModeToggle");
+      modeToggle.style.display = count >= 2 ? "flex" : "none";
+      document.getElementById("modeCombined").textContent = t("combined");
+      document.getElementById("modeSystem").textContent = t("system");
+      // Reset to combined if only 1 selection (system doesn't make sense for 1)
+      if (count < 2 && betSlipMode === "system") setBetSlipMode("combined");
       if (count === 0) sidebar.classList.remove("open");
       // Auto-expand on first bet only
       if (count === 1 && wasEmpty) sidebar.classList.add("open");
@@ -1736,12 +1749,38 @@
     function clearSlip() { betSlip = []; document.getElementById("stakeInput").value = ""; renderBetSlip(); renderMatches(); }
     function setStake(a) { document.getElementById("stakeInput").value = a; updateSlipSummary(); }
 
+    function setBetSlipMode(mode) {
+      betSlipMode = mode;
+      document.getElementById("modeCombined").classList.toggle("active", mode === "combined");
+      document.getElementById("modeSystem").classList.toggle("active", mode === "system");
+      updateSlipSummary();
+    }
+
     function updateSlipSummary() {
       if (betSlip.length === 0) return;
-      const totalOdds = betSlip.reduce((a, s) => a * s.odd, 1);
       const stake = parseFloat(document.getElementById("stakeInput").value) || 0;
-      document.getElementById("totalOddsValue").textContent = totalOdds.toFixed(2);
-      document.getElementById("possibleWinValue").textContent = (stake * totalOdds).toFixed(2) + " €";
+
+      if (betSlipMode === "system") {
+        // System: each selection is independent, stake per bet
+        const count = betSlip.length;
+        const totalCost = stake * count;
+        // Max possible win = sum of each individual bet's win
+        const maxWin = betSlip.reduce((sum, s) => sum + stake * s.odd, 0);
+        document.getElementById("totalOddsLabel").textContent = t("perBetStake");
+        document.getElementById("totalOddsValue").textContent = stake.toFixed(2) + " €";
+        document.getElementById("possibleWinLabel").textContent = t("possibleWin");
+        document.getElementById("possibleWinValue").textContent = maxWin.toFixed(2) + " €";
+        // Update place bet button to show total cost
+        document.getElementById("placeBetBtn").textContent = t("placeBet").toUpperCase() + (stake > 0 ? " (" + totalCost.toFixed(2) + " €)" : "");
+      } else {
+        // Combined: multiply all odds
+        const totalOdds = betSlip.reduce((a, s) => a * s.odd, 1);
+        document.getElementById("totalOddsLabel").textContent = t("totalOdds");
+        document.getElementById("totalOddsValue").textContent = totalOdds.toFixed(2);
+        document.getElementById("possibleWinLabel").textContent = t("possibleWin");
+        document.getElementById("possibleWinValue").textContent = (stake * totalOdds).toFixed(2) + " €";
+        document.getElementById("placeBetBtn").textContent = t("placeBet").toUpperCase();
+      }
     }
 
     async function placeBet() {
@@ -1758,33 +1797,75 @@
       const credits = currentUser.credits || 0;
       if (stake < MIN_BET) { showToast(t("minBetError") + MIN_BET, "error"); return; }
       if (stake > MAX_BET) { showToast(t("maxBetError") + MAX_BET.toLocaleString(), "error"); return; }
-      if (stake > credits) { showToast(t("insufficientCredits"), "error"); return; }
 
-      const totalOdds = betSlip.reduce((a, s) => a * s.odd, 1);
-      try {
-        const res = await fetch("/api/bets", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            userId: currentUser.id,
-            selections: [...betSlip],
-            stake,
-            totalOdds,
-            possibleWin: stake * totalOdds,
-          })
-        });
-        const data = await res.json();
-        if (data.success) {
-          currentUser.credits = data.credits;
+      if (betSlipMode === "system") {
+        // System: each selection is an individual bet, total cost = stake × count
+        const totalCost = stake * betSlip.length;
+        if (totalCost > credits) { showToast(t("insufficientCredits"), "error"); return; }
+
+        let allSuccess = true;
+        for (const sel of betSlip) {
+          try {
+            const res = await fetch("/api/bets", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                userId: currentUser.id,
+                selections: [sel],
+                stake,
+                totalOdds: sel.odd,
+                possibleWin: stake * sel.odd,
+              })
+            });
+            const data = await res.json();
+            if (data.success) {
+              currentUser.credits = data.credits;
+            } else {
+              allSuccess = false;
+              showToast(data.error || t("insufficientCredits"), "error");
+              break;
+            }
+          } catch (e) {
+            allSuccess = false;
+            showToast("Connection error", "error");
+            break;
+          }
+        }
+        if (allSuccess) {
           localStorage.setItem("betzone_user", JSON.stringify(currentUser));
           clearSlip();
           updateUI();
-          showToast(t("betPlaced"), "success");
-        } else {
-          showToast(data.error || t("insufficientCredits"), "error");
+          showToast(t("betPlaced") + " (" + betSlip.length + "x " + t("system") + ")", "success");
         }
-      } catch (e) {
-        showToast("Connection error", "error");
+      } else {
+        // Combined: single bet with all selections
+        if (stake > credits) { showToast(t("insufficientCredits"), "error"); return; }
+        const totalOdds = betSlip.reduce((a, s) => a * s.odd, 1);
+        try {
+          const res = await fetch("/api/bets", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              userId: currentUser.id,
+              selections: [...betSlip],
+              stake,
+              totalOdds,
+              possibleWin: stake * totalOdds,
+            })
+          });
+          const data = await res.json();
+          if (data.success) {
+            currentUser.credits = data.credits;
+            localStorage.setItem("betzone_user", JSON.stringify(currentUser));
+            clearSlip();
+            updateUI();
+            showToast(t("betPlaced"), "success");
+          } else {
+            showToast(data.error || t("insufficientCredits"), "error");
+          }
+        } catch (e) {
+          showToast("Connection error", "error");
+        }
       }
     }
 

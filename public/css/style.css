@@ -768,6 +768,43 @@ input {
   border-radius: 0;
 }
 
+.betslip-mode-toggle {
+  display: flex;
+  padding: 0.4rem 1.2rem;
+  gap: 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.betslip-mode-toggle .mode-btn {
+  flex: 1;
+  padding: 0.4rem 0;
+  font-size: 0.75rem;
+  font-weight: 700;
+  font-family: inherit;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border: 1px solid var(--border);
+  background: var(--bg-input);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.betslip-mode-toggle .mode-btn:first-child {
+  border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+  border-right: none;
+}
+
+.betslip-mode-toggle .mode-btn:last-child {
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+
+.betslip-mode-toggle .mode-btn.active {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 .betslip-header {
   padding: 1rem 1.2rem;
   border-bottom: 1px solid var(--border);
