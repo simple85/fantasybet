@@ -28,6 +28,7 @@ const {
   fetchLiveFixtures,
   fetchLiveOdds,
   fetchPreMatchOdds,
+  fetchFixtureStatistics,
   saveData,
   loadExistingData,
   formatDate,
@@ -575,8 +576,61 @@ function evaluateSelection(sel, match) {
     return evalOU(htTotal, pick);
   }
 
-  // ═══ UNEVALUABLE (corners, cards, players, shots — no stat data) ═══
-  // Void these bets (refund stake) since we can't determine the outcome
+  // ═══ STATISTICS-BASED BETS (corners, cards, shots) ═══
+  const st = match.stats;
+  if (!st || !st.home || !st.away) return "void"; // no stats available — void
+
+  const totalCorners = st.totalCorners;
+  const homeCorners = st.home.corners;
+  const awayCorners = st.away.corners;
+  const totalCards = st.totalCards;
+  const homeCards = st.home.totalCards;
+  const awayCards = st.away.totalCards;
+  const totalShots = st.totalShotsOnGoal;
+  const homeShots = st.home.shotsOnGoal;
+  const awayShots = st.away.shotsOnGoal;
+
+  // ── Corner bets ──
+  if (/\b(total|match).*corner/i.test(name)) return evalOU(totalCorners, pick);
+  if (/\bhome.*corner/i.test(name)) return evalOU(homeCorners, pick);
+  if (/\baway.*corner/i.test(name)) return evalOU(awayCorners, pick);
+  if (/\bcorner.*over.?under/i.test(name) || /\bcorner.*line/i.test(name)) return evalOU(totalCorners, pick);
+
+  // Race to N corners — pick is "Home", "Away", or "Neither"/"No Winner"
+  if (/\brace to.*corner/i.test(name)) {
+    const raceMatch = name.match(/race to (?:the )?(\d+)/i);
+    if (raceMatch) {
+      const target = parseInt(raceMatch[1]);
+      const homeReached = homeCorners >= target;
+      const awayReached = awayCorners >= target;
+      if (pick === "Home" || pick === "1") return homeReached ? "won" : "lost";
+      if (pick === "Away" || pick === "2") return awayReached ? "won" : "lost";
+      if (/neither|no winner|no goal/i.test(pick)) return (!homeReached && !awayReached) ? "won" : "lost";
+    }
+  }
+
+  // "Which team will score the Nth corner?" / "Last Corner" — can't determine Nth corner from totals alone
+  // We only know final totals, so void these (would need event-by-event data)
+  if (/\bwhich team.*corner/i.test(name) || /\blast corner/i.test(name)) return "void";
+
+  // Corner match result (which team got more corners)
+  if (/\bcorner.*(match|result|winner)/i.test(name) || /\b(match|result).*corner/i.test(name)) {
+    return evalResult(homeCorners, awayCorners, pick);
+  }
+
+  // ── Card bets ──
+  if (/\b(total|match).*card/i.test(name)) return evalOU(totalCards, pick);
+  if (/\bhome.*card/i.test(name)) return evalOU(homeCards, pick);
+  if (/\baway.*card/i.test(name)) return evalOU(awayCards, pick);
+  if (/\bcard.*over.?under/i.test(name) || /\bcard.*line/i.test(name)) return evalOU(totalCards, pick);
+
+  // ── Shot on goal bets ──
+  if (/\b(total|match).*shot/i.test(name)) return evalOU(totalShots, pick);
+  if (/\bhome.*shot/i.test(name)) return evalOU(homeShots, pick);
+  if (/\baway.*shot/i.test(name)) return evalOU(awayShots, pick);
+  if (/\bshot.*on.*goal/i.test(name)) return evalOU(totalShots, pick);
+
+  // ═══ TRULY UNEVALUABLE (player-specific, exotic props) ═══
   return "void";
 }
 
@@ -739,9 +793,21 @@ async function tickLiveFixtures() {
       lastMatchUpdate = new Date().toISOString();
     }
 
-    // Immediate settlement on finish detection
+    // Fetch statistics for newly finished matches, then settle
     if (newlyFinished.length > 0) {
       console.log(`[ENGINE] ${newlyFinished.length} match(es) just finished: ${newlyFinished.map(m => m.id).join(", ")}`);
+      for (const match of newlyFinished) {
+        try {
+          const stats = await fetchFixtureStatistics(match.id);
+          if (stats && stats.home && stats.away) {
+            match.stats = stats;
+            console.log(`[STATS] ${match.id}: corners ${stats.home.corners}-${stats.away.corners}, cards ${stats.home.totalCards}-${stats.away.totalCards}, shots ${stats.home.shotsOnGoal}-${stats.away.shotsOnGoal}`);
+          }
+        } catch (e) {
+          console.error(`[STATS] Failed for ${match.id}: ${e.message}`);
+        }
+      }
+      saveData(matches);
       const result = settleBets();
       if (result.settled > 0) {
         broadcast("settled", { settled: result.settled, time: new Date().toISOString() });

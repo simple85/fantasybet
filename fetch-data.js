@@ -194,6 +194,45 @@ async function fetchPreMatchOdds(fixtureId) {
   return [];
 }
 
+// ── Fetch fixture statistics (corners, cards, shots — 1 API call per fixture) ──
+async function fetchFixtureStatistics(fixtureId) {
+  try {
+    const data = await apiRequest("fixtures/statistics", { fixture: fixtureId });
+    const items = data.response || [];
+    const stats = {};
+    for (const team of items) {
+      const side = team.team?.id ? team.team : null;
+      if (!side) continue;
+      const map = {};
+      for (const s of (team.statistics || [])) {
+        map[s.type] = s.value;
+      }
+      // We'll identify home/away by index: first = home, second = away
+      const key = Object.keys(stats).length === 0 ? "home" : "away";
+      stats[key] = {
+        teamId: side.id,
+        teamName: side.name,
+        corners: parseInt(map["Corner Kicks"]) || 0,
+        yellowCards: parseInt(map["Yellow Cards"]) || 0,
+        redCards: parseInt(map["Red Cards"]) || 0,
+        totalCards: (parseInt(map["Yellow Cards"]) || 0) + (parseInt(map["Red Cards"]) || 0),
+        shotsOnGoal: parseInt(map["Shots on Goal"]) || 0,
+        shotsTotal: parseInt(map["Total Shots"]) || 0,
+        fouls: parseInt(map["Fouls"]) || 0,
+      };
+    }
+    if (stats.home && stats.away) {
+      stats.totalCorners = stats.home.corners + stats.away.corners;
+      stats.totalCards = stats.home.totalCards + stats.away.totalCards;
+      stats.totalShotsOnGoal = stats.home.shotsOnGoal + stats.away.shotsOnGoal;
+    }
+    return stats;
+  } catch (err) {
+    console.error(`  FAIL statistics fixture ${fixtureId}: ${err.message}`);
+    return null;
+  }
+}
+
 // ── File I/O ──
 function saveData(matches) {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -217,6 +256,7 @@ module.exports = {
   fetchLiveFixtures,
   fetchLiveOdds,
   fetchPreMatchOdds,
+  fetchFixtureStatistics,
   saveData,
   loadExistingData,
   formatDate,
