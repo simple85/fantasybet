@@ -320,7 +320,7 @@
           <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.5rem;">
             <div class="stake-input-group" style="flex:0 1 55%;margin-bottom:0;">
               <label id="stakeLabel">Stake</label>
-              <input type="number" id="stakeInput" min="1" placeholder="0" style="font-size:16px;" oninput="updateSlipSummary()">
+              <input type="number" id="stakeInput" min="5" placeholder="minimum 5" style="font-size:16px;" oninput="updateSlipSummary()">
               <span class="currency">€</span>
             </div>
             <label class="accept-odds-row" for="acceptOddsToggle" style="flex:1;cursor:pointer;">
@@ -1759,6 +1759,10 @@
     function updateSlipSummary() {
       if (betSlip.length === 0) return;
       const stake = parseFloat(document.getElementById("stakeInput").value) || 0;
+      const btn = document.getElementById("placeBetBtn");
+      const validStake = stake >= MIN_BET;
+      btn.disabled = !validStake;
+      btn.style.opacity = validStake ? "1" : "0.4";
 
       if (betSlipMode === "system") {
         // System: each selection is independent, stake per bet
@@ -1771,7 +1775,7 @@
         document.getElementById("possibleWinLabel").textContent = t("possibleWin");
         document.getElementById("possibleWinValue").textContent = maxWin.toFixed(2) + " €";
         // Update place bet button to show total cost
-        document.getElementById("placeBetBtn").textContent = t("placeBet").toUpperCase() + (stake > 0 ? " (" + totalCost.toFixed(2) + " €)" : "");
+        btn.textContent = t("placeBet").toUpperCase() + (validStake ? " (" + totalCost.toFixed(2) + " €)" : "");
       } else {
         // Combined: multiply all odds
         const totalOdds = betSlip.reduce((a, s) => a * s.odd, 1);
@@ -1779,7 +1783,7 @@
         document.getElementById("totalOddsValue").textContent = totalOdds.toFixed(2);
         document.getElementById("possibleWinLabel").textContent = t("possibleWin");
         document.getElementById("possibleWinValue").textContent = (stake * totalOdds).toFixed(2) + " €";
-        document.getElementById("placeBetBtn").textContent = t("placeBet").toUpperCase();
+        btn.textContent = t("placeBet").toUpperCase();
       }
     }
 
