@@ -1392,9 +1392,9 @@ input {
 /* ── TOAST ── */
 .toast {
   position: fixed;
-  bottom: 2rem;
+  top: 5rem;
   left: 50%;
-  transform: translateX(-50%) translateY(100px);
+  transform: translateX(-50%) translateY(-100px);
   background: var(--bg-card);
   border: 1px solid var(--border);
   color: var(--text-primary);
@@ -1403,7 +1403,7 @@ input {
   box-shadow: var(--shadow-lg);
   font-size: 0.85rem;
   font-weight: 500;
-  z-index: 999;
+  z-index: 9999;
   transition: transform 0.3s ease;
   display: flex;
   align-items: center;
@@ -1411,7 +1411,7 @@ input {
 }
 
 .toast.show {
-  transform: translateX(-50%) translateY(0);
+  transform: translateX(-50%) translateY(0) !important;
 }
 
 .toast.success {
