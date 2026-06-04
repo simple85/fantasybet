@@ -1082,9 +1082,9 @@
           const a = lw.values.find(v => v.value === "Away");
           const title = d ? "1X2" : (t("home") + "/" + t("away"));
           primaryHtml += '<div class="odds-group"><div class="odds-group-title">' + title + '</div><div class="odds-row">';
-          if (h) primaryHtml += oddBtn(mid, lw.id, "Home", "1", h.odd, homeName, bettingDisabled);
-          if (d) primaryHtml += oddBtn(mid, lw.id, "Draw", "X", d.odd, t("draw"), bettingDisabled);
-          if (a) primaryHtml += oddBtn(mid, lw.id, "Away", "2", a.odd, awayName, bettingDisabled);
+          if (h) primaryHtml += oddBtn(mid, lw.id, "Home", "1", h.odd, lw.name, bettingDisabled);
+          if (d) primaryHtml += oddBtn(mid, lw.id, "Draw", "X", d.odd, lw.name, bettingDisabled);
+          if (a) primaryHtml += oddBtn(mid, lw.id, "Away", "2", a.odd, lw.name, bettingDisabled);
           primaryHtml += '</div></div>';
         }
         if (lou) {
@@ -1100,8 +1100,8 @@
             const un = lou.values.find(v => v.value === "Under " + line);
             if (un) {
               primaryHtml += '<div class="odds-group"><div class="odds-group-title">' + t("over") + '/' + t("under") + ' ' + line + '</div><div class="odds-row">';
-              primaryHtml += oddBtn(mid, lou.id, best.value, t("over"), best.odd, null, bettingDisabled);
-              primaryHtml += oddBtn(mid, lou.id, un.value, t("under"), un.odd, null, bettingDisabled);
+              primaryHtml += oddBtn(mid, lou.id, best.value, t("over"), best.odd, lou.name, bettingDisabled);
+              primaryHtml += oddBtn(mid, lou.id, un.value, t("under"), un.odd, lou.name, bettingDisabled);
               primaryHtml += '</div></div>';
             }
           }
@@ -1117,9 +1117,9 @@
           const d = matchWinner.values.find(v => v.value === "Draw");
           const a = matchWinner.values.find(v => v.value === "Away");
           primaryHtml += '<div class="odds-group"><div class="odds-group-title">1X2</div><div class="odds-row">';
-          if (h) primaryHtml += oddBtn(mid, 1, "Home", "1", h.odd, homeName, bettingDisabled);
-          if (d) primaryHtml += oddBtn(mid, 1, "Draw", "X", d.odd, t("draw"), bettingDisabled);
-          if (a) primaryHtml += oddBtn(mid, 1, "Away", "2", a.odd, awayName, bettingDisabled);
+          if (h) primaryHtml += oddBtn(mid, 1, "Home", "1", h.odd, "Match Winner", bettingDisabled);
+          if (d) primaryHtml += oddBtn(mid, 1, "Draw", "X", d.odd, "Match Winner", bettingDisabled);
+          if (a) primaryHtml += oddBtn(mid, 1, "Away", "2", a.odd, "Match Winner", bettingDisabled);
           primaryHtml += '</div></div>';
         }
 
@@ -1128,8 +1128,8 @@
           const un = goalsOU.values.find(v => v.value === "Under 2.5");
           if (ov && un) {
             primaryHtml += '<div class="odds-group"><div class="odds-group-title">' + t("over") + '/' + t("under") + ' 2.5</div><div class="odds-row">';
-            primaryHtml += oddBtn(mid, 5, "Over 2.5", t("over"), ov.odd, null, bettingDisabled);
-            primaryHtml += oddBtn(mid, 5, "Under 2.5", t("under"), un.odd, null, bettingDisabled);
+            primaryHtml += oddBtn(mid, 5, "Over 2.5", t("over"), ov.odd, "Goals Over/Under", bettingDisabled);
+            primaryHtml += oddBtn(mid, 5, "Under 2.5", t("under"), un.odd, "Goals Over/Under", bettingDisabled);
             primaryHtml += '</div></div>';
           }
         }
@@ -1139,8 +1139,8 @@
           const n = btts.values.find(v => v.value === "No");
           if (y && n) {
             primaryHtml += '<div class="odds-group"><div class="odds-group-title">' + betName(8, "Both Teams Score") + '</div><div class="odds-row">';
-            primaryHtml += oddBtn(mid, 8, "Yes", t("yes"), y.odd, null, bettingDisabled);
-            primaryHtml += oddBtn(mid, 8, "No", t("no"), n.odd, null, bettingDisabled);
+            primaryHtml += oddBtn(mid, 8, "Yes", t("yes"), y.odd, "Both Teams Score", bettingDisabled);
+            primaryHtml += oddBtn(mid, 8, "No", t("no"), n.odd, "Both Teams Score", bettingDisabled);
             primaryHtml += '</div></div>';
           }
         }

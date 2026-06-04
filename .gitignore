@@ -4,8 +4,8 @@
 # Dependencies
 node_modules/
 
-# Cached API data (regenerated automatically)
-data/matches.json
+# Runtime data (regenerated automatically)
+data/
 
 # OS files
 .DS_Store

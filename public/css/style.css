@@ -762,7 +762,8 @@ input {
 
 .betslip-sidebar.open {
   max-height: calc(100vh - 60px);
-  height: calc(100vh - 60px);
+  height: auto;
+  top: 60px;
   overflow-y: auto;
   border-radius: 0;
 }
