@@ -956,6 +956,20 @@
         filtered = filtered.filter(m => m.league.name === currentLeague);
       }
 
+      // Save expanded states before re-render
+      const expandedIds = new Set();
+      document.querySelectorAll('.match-expanded.show').forEach(el => {
+        const mid = el.id.replace('expanded-', '');
+        if (mid) expandedIds.add(mid);
+      });
+      // Save active market tab per match
+      const activeTabs = {};
+      document.querySelectorAll('.market-tab.active').forEach(el => {
+        const panel = el.getAttribute('onclick');
+        const match = panel?.match(/switchMarketTab\('([^']+)',\s*'([^']+)'\)/);
+        if (match) activeTabs[match[1]] = match[2];
+      });
+
       const container = document.getElementById("matchesList");
       if (filtered.length === 0) {
         container.innerHTML = '<div class="betslip-empty" style="padding:3rem;"><div class="icon">⚽</div><p>' + t("noMatches") + '</p></div>';
@@ -1007,6 +1021,26 @@
           let html = "";
           sorted.forEach(m => { html += renderMatchCard(m, true); });
           container.innerHTML = html;
+        }
+      }
+
+      // Restore expanded states and active tabs after re-render
+      expandedIds.forEach(mid => {
+        const el = document.getElementById("expanded-" + mid);
+        const btn = el?.previousElementSibling;
+        if (el) el.classList.add("show");
+        if (btn) btn.classList.add("open");
+      });
+      for (const [mid, tabId] of Object.entries(activeTabs)) {
+        const card = document.getElementById("card-" + mid);
+        if (!card) continue;
+        const tab = card.querySelector('.market-tab[onclick*="\\'" + tabId + "\\'"]');
+        if (tab) {
+          card.querySelectorAll('.market-tab').forEach(t => t.classList.remove('active'));
+          card.querySelectorAll('.market-panel').forEach(p => p.classList.remove('show'));
+          tab.classList.add('active');
+          const panel = document.getElementById("panel-" + mid + "-" + tabId);
+          if (panel) panel.classList.add('show');
         }
       }
     }
