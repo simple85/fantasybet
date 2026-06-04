@@ -1087,9 +1087,9 @@
           const a = lw.values.find(v => v.value === "Away");
           const lwTitle = translateLiveBetName(lw.name);
           primaryHtml += '<div class="odds-group"><div class="odds-group-title">' + lwTitle + '</div><div class="odds-row">';
-          if (h) primaryHtml += oddBtn(mid, lw.id, "Home", t("home"), h.odd, lw.name, bettingDisabled);
-          if (d) primaryHtml += oddBtn(mid, lw.id, "Draw", t("draw"), d.odd, lw.name, bettingDisabled);
-          if (a) primaryHtml += oddBtn(mid, lw.id, "Away", t("away"), a.odd, lw.name, bettingDisabled);
+          if (h) primaryHtml += oddBtn(mid, lw.id, "Home", t("home"), h.odd, lw.name, bettingDisabled, h.suspended);
+          if (d) primaryHtml += oddBtn(mid, lw.id, "Draw", t("draw"), d.odd, lw.name, bettingDisabled, d.suspended);
+          if (a) primaryHtml += oddBtn(mid, lw.id, "Away", t("away"), a.odd, lw.name, bettingDisabled, a.suspended);
           primaryHtml += '</div></div>';
         }
         if (lou) {
@@ -1106,8 +1106,8 @@
             if (un) {
               const louTitle = translateLiveBetName(lou.name);
               primaryHtml += '<div class="odds-group"><div class="odds-group-title">' + louTitle + '</div><div class="odds-row">';
-              primaryHtml += oddBtn(mid, lou.id, best.value, t("over") + ' ' + line, best.odd, lou.name, bettingDisabled);
-              primaryHtml += oddBtn(mid, lou.id, un.value, t("under") + ' ' + line, un.odd, lou.name, bettingDisabled);
+              primaryHtml += oddBtn(mid, lou.id, best.value, t("over") + ' ' + line, best.odd, lou.name, bettingDisabled, best.suspended);
+              primaryHtml += oddBtn(mid, lou.id, un.value, t("under") + ' ' + line, un.odd, lou.name, bettingDisabled, un.suspended);
               primaryHtml += '</div></div>';
             }
           }
@@ -1572,13 +1572,15 @@
     }
 
     // ── ODD BUTTON HELPER ──
-    function oddBtn(matchId, betId, pick, label, value, fullName, disabled) {
+    function oddBtn(matchId, betId, pick, label, value, fullName, disabled, suspended) {
       if (!value) return '';
-      const sel = !disabled && isSelected(matchId, betId, pick) ? "selected" : "";
-      const disAttr = disabled ? ' disabled' : '';
-      const disClass = disabled ? ' disabled' : '';
+      const isDisabled = disabled || suspended;
+      const sel = !isDisabled && isSelected(matchId, betId, pick) ? "selected" : "";
+      const disAttr = isDisabled ? ' disabled' : '';
+      const disClass = isDisabled ? ' disabled' : '';
+      const suspClass = suspended ? ' suspended' : '';
       const oddKey = matchId + "-" + betId + "-" + pick;
-      return '<button class="odd-btn ' + sel + disClass + '"' + disAttr + ' onclick="toggleOdd(' + matchId + ',' + betId + ',\'' + esc(pick) + '\',' + value + ',\'' + esc(fullName || label) + '\')">' +
+      return '<button class="odd-btn ' + sel + disClass + suspClass + '"' + disAttr + ' onclick="toggleOdd(' + matchId + ',' + betId + ',\'' + esc(pick) + '\',' + value + ',\'' + esc(fullName || label) + '\')">' +
         '<span class="label">' + label + '</span>' +
         '<span class="value odd-value" data-odd-key="' + esc(oddKey) + '">' + parseFloat(value).toFixed(2) + '</span>' +
       '</button>';
