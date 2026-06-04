@@ -1803,43 +1803,35 @@
       if (stake > MAX_BET) { showToast(t("maxBetError") + MAX_BET.toLocaleString(), "error"); return; }
 
       if (betSlipMode === "system") {
-        // System: each selection is an individual bet, total cost = stake × count
+        // System: single bet, each selection independent. Total cost = stake × count.
         const totalCost = stake * betSlip.length;
         if (totalCost > credits) { showToast(t("insufficientCredits"), "error"); return; }
-
-        let allSuccess = true;
-        for (const sel of betSlip) {
-          try {
-            const res = await fetch("/api/bets", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                userId: currentUser.id,
-                selections: [sel],
-                stake,
-                totalOdds: sel.odd,
-                possibleWin: stake * sel.odd,
-              })
-            });
-            const data = await res.json();
-            if (data.success) {
-              currentUser.credits = data.credits;
-            } else {
-              allSuccess = false;
-              showToast(data.error || t("insufficientCredits"), "error");
-              break;
-            }
-          } catch (e) {
-            allSuccess = false;
-            showToast("Connection error", "error");
-            break;
+        const maxWin = betSlip.reduce((sum, s) => sum + stake * s.odd, 0);
+        try {
+          const res = await fetch("/api/bets", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              userId: currentUser.id,
+              selections: [...betSlip],
+              stake,
+              totalOdds: 0,
+              possibleWin: maxWin,
+              mode: "system",
+            })
+          });
+          const data = await res.json();
+          if (data.success) {
+            currentUser.credits = data.credits;
+            localStorage.setItem("betzone_user", JSON.stringify(currentUser));
+            clearSlip();
+            updateUI();
+            showToast(t("betPlaced") + " (" + t("system") + ")", "success");
+          } else {
+            showToast(data.error || t("insufficientCredits"), "error");
           }
-        }
-        if (allSuccess) {
-          localStorage.setItem("betzone_user", JSON.stringify(currentUser));
-          clearSlip();
-          updateUI();
-          showToast(t("betPlaced") + " (" + betSlip.length + "x " + t("system") + ")", "success");
+        } catch (e) {
+          showToast("Connection error", "error");
         }
       } else {
         // Combined: single bet with all selections
@@ -1855,6 +1847,7 @@
               stake,
               totalOdds,
               possibleWin: stake * totalOdds,
+              mode: "combined",
             })
           });
           const data = await res.json();
@@ -1898,10 +1891,16 @@
       const renderBet = (bet) => {
         const dt = new Date(bet.timestamp);
         const statusLabel = t(bet.status);
+        const isSystem = bet.mode === "system";
+        const modeTag = isSystem
+          ? '<span style="background:var(--blue-dim);color:var(--blue);font-size:0.6rem;font-weight:700;padding:0.15rem 0.4rem;border-radius:4px;margin-left:0.4rem;text-transform:uppercase;">' + t("system") + '</span>'
+          : (bet.selections.length > 1
+            ? '<span style="background:var(--accent-dim);color:var(--accent);font-size:0.6rem;font-weight:700;padding:0.15rem 0.4rem;border-radius:4px;margin-left:0.4rem;text-transform:uppercase;">' + t("combined") + '</span>'
+            : '');
 
         return '<div class="bet-card ' + bet.status + '">' +
           '<div class="bet-card-header">' +
-            '<span class="bet-card-id">' + bet.id + '</span>' +
+            '<span class="bet-card-id">' + bet.id + modeTag + '</span>' +
             '<span class="bet-card-date">' + dt.toLocaleDateString() + ' ' + dt.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}) + '</span>' +
             '<span class="bet-card-status ' + bet.status + '">' + statusLabel + '</span>' +
           '</div>' +
@@ -1947,13 +1946,17 @@
             '</div>';
           }).join("") +
           '<div class="bet-card-footer">' +
-            '<span>' + t("stake") + ': <strong>' + bet.stake.toFixed(2) + ' €</strong></span>' +
-            '<span>' + t("totalOdds") + ': <strong>' + bet.totalOdds.toFixed(2) + '</strong></span>' +
+            (isSystem
+              ? '<span>' + t("perBetStake") + '<br><strong>' + bet.stake.toFixed(2) + ' €</strong></span>' +
+                '<span>' + t("totalStake") + '<br><strong>' + (bet.stake * bet.selections.length).toFixed(2) + ' €</strong></span>'
+              : '<span>' + t("stake") + '<br><strong>' + bet.stake.toFixed(2) + ' €</strong></span>' +
+                '<span>' + t("totalOdds") + '<br><strong>' + (bet.totalOdds || 0).toFixed(2) + '</strong></span>'
+            ) +
             (bet.status === "won"
-              ? '<span style="color:var(--accent);font-weight:700;">+ ' + bet.possibleWin.toFixed(2) + ' €</span>'
+              ? '<span style="color:var(--accent);font-weight:700;">' + t("possibleWin") + '<br>+ ' + bet.possibleWin.toFixed(2) + ' €</span>'
               : bet.status === "void"
-                ? '<span style="color:var(--text-muted);">' + t("stake") + ' ↩ ' + bet.stake.toFixed(2) + ' €</span>'
-                : '<span>' + t("possibleWin") + ': <strong style="color:var(--yellow)">' + bet.possibleWin.toFixed(2) + ' €</strong></span>') +
+                ? '<span style="color:var(--text-muted);">' + t("stake") + '<br>↩ ' + (isSystem ? (bet.stake * bet.selections.length) : bet.stake).toFixed(2) + ' €</span>'
+                : '<span>' + t("possibleWin") + '<br><strong style="color:var(--yellow)">' + bet.possibleWin.toFixed(2) + ' €</strong></span>') +
           '</div>' +
         '</div>';
       };

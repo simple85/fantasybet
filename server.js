@@ -242,24 +242,29 @@ app.get("/api/users/:id", (req, res) => {
 // BET ROUTES
 // ══════════════════════════════════════════
 app.post("/api/bets", (req, res) => {
-  const { userId, selections, stake, totalOdds, possibleWin } = req.body;
-  if (!userId || !selections || !stake || !totalOdds) {
+  const { userId, selections, stake, totalOdds, possibleWin, mode } = req.body;
+  if (!userId || !selections || !stake || (totalOdds == null && !mode)) {
     return res.status(400).json({ success: false, error: "Missing fields" });
   }
   const users = readUsers();
   const user = users.find(u => u.id === userId);
   if (!user) return res.status(404).json({ success: false, error: "User not found" });
-  if (user.credits < stake) return res.status(400).json({ success: false, error: "Insufficient credits" });
 
-  user.credits -= parseFloat(stake);
+  // System: total cost = stake × selections count. Combined: cost = stake.
+  const betMode = mode || "combined";
+  const totalCost = betMode === "system" ? parseFloat(stake) * selections.length : parseFloat(stake);
+  if (user.credits < totalCost) return res.status(400).json({ success: false, error: "Insufficient credits" });
+
+  user.credits -= totalCost;
   writeUsers(users);
 
   const bet = {
     id: "BZ" + Date.now().toString(36).toUpperCase(),
     userId,
     timestamp: new Date().toISOString(),
+    mode: betMode,
     selections,
-    stake: parseFloat(stake),
+    stake: parseFloat(stake),       // per-bet stake for system, total stake for combined
     totalOdds: parseFloat(totalOdds),
     possibleWin: parseFloat(possibleWin),
     status: "pending",
@@ -667,41 +672,63 @@ function settleBets() {
 
     if (!allFinished) continue; // wait for all matches to finish
 
-    if (anyLost) {
-      // Any lost selection = entire bet lost (void selections don't save it)
-      bet.status = "lost";
-      bet.settledAt = new Date().toISOString();
-      settled++;
-    } else if (anyVoid) {
-      // All non-void selections won — recalculate odds excluding void selections
-      const allVoid = bet.selections.every(s => s.result === "void");
-      if (allVoid) {
-        // Every selection void = full refund
-        bet.status = "void";
-        bet.settledAt = new Date().toISOString();
-        const user = users.find(u => u.id === bet.userId);
-        if (user) user.credits += bet.stake;
-      } else {
-        // Partial void: multiply only won selections' odds, void = 1.00
-        const adjustedOdds = bet.selections.reduce((acc, s) => {
-          return acc * (s.result === "void" ? 1.0 : s.odd);
-        }, 1.0);
-        const payout = Math.round(bet.stake * adjustedOdds * 100) / 100;
-        bet.status = "won";
-        bet.totalOdds = Math.round(adjustedOdds * 100) / 100;
-        bet.possibleWin = payout;
-        bet.settledAt = new Date().toISOString();
-        const user = users.find(u => u.id === bet.userId);
-        if (user) user.credits += payout;
+    if (bet.mode === "system") {
+      // ── SYSTEM: each selection is independent ──
+      // Payout = sum of (stake × odd) for each won selection. Void = refund that stake.
+      let totalPayout = 0;
+      let wonCount = 0, lostCount = 0, voidCount = 0;
+      for (const sel of bet.selections) {
+        if (sel.result === "won") { totalPayout += bet.stake * sel.odd; wonCount++; }
+        else if (sel.result === "void") { totalPayout += bet.stake; voidCount++; } // refund
+        else { lostCount++; }
       }
-      settled++;
-    } else {
-      // All selections won, no voids
-      bet.status = "won";
+      const totalPR = Math.round(totalPayout * 100) / 100;
+      if (wonCount === 0 && voidCount === 0) {
+        bet.status = "lost";
+      } else if (wonCount === 0 && voidCount > 0 && lostCount === 0) {
+        bet.status = "void";
+      } else {
+        bet.status = wonCount > 0 ? "won" : "void";
+      }
+      bet.possibleWin = totalPR;
       bet.settledAt = new Date().toISOString();
       const user = users.find(u => u.id === bet.userId);
-      if (user) user.credits += bet.possibleWin;
+      if (user) user.credits += totalPR;
       settled++;
+    } else {
+      // ── COMBINED: all selections must win ──
+      if (anyLost) {
+        bet.status = "lost";
+        bet.settledAt = new Date().toISOString();
+        settled++;
+      } else if (anyVoid) {
+        const allVoid = bet.selections.every(s => s.result === "void");
+        if (allVoid) {
+          bet.status = "void";
+          bet.settledAt = new Date().toISOString();
+          const user = users.find(u => u.id === bet.userId);
+          if (user) user.credits += bet.stake;
+        } else {
+          // Partial void: multiply only won selections' odds, void = 1.00
+          const adjustedOdds = bet.selections.reduce((acc, s) => {
+            return acc * (s.result === "void" ? 1.0 : s.odd);
+          }, 1.0);
+          const payout = Math.round(bet.stake * adjustedOdds * 100) / 100;
+          bet.status = "won";
+          bet.totalOdds = Math.round(adjustedOdds * 100) / 100;
+          bet.possibleWin = payout;
+          bet.settledAt = new Date().toISOString();
+          const user = users.find(u => u.id === bet.userId);
+          if (user) user.credits += payout;
+        }
+        settled++;
+      } else {
+        bet.status = "won";
+        bet.settledAt = new Date().toISOString();
+        const user = users.find(u => u.id === bet.userId);
+        if (user) user.credits += bet.possibleWin;
+        settled++;
+      }
     }
   }
 
