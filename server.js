@@ -51,6 +51,8 @@ let lastDailyRefresh = 0;      // Epoch ms of last fixture refresh
 let lastPreMatchOdds = 0;      // Epoch ms of last pre-match odds cycle
 let lastMatchUpdate = null;    // ISO string for API responses
 let _liveOddsBusy = false;
+const STALE_THRESHOLD_MS = 90000;  // 90 seconds — disable odds if unchanged
+const _oddsFingerprints = {};  // { fixtureId: { hash: string, lastChanged: epochMs } }
 let _liveFixturesBusy = false;
 let _preMatchBusy = false;
 let _dailyBusy = false;
@@ -744,11 +746,57 @@ function settleBets() {
 // ══════════════════════════════════════════
 
 // ── Live Odds — every 5 seconds (HIGHEST PRIORITY) ──
+// Build a quick hash of all odds values for a fixture to detect changes
+function oddsFingerprint(fixtureOdds) {
+  let s = "";
+  for (const bet of fixtureOdds) {
+    for (const v of bet.values) {
+      s += v.value + ":" + v.odd + ":" + (v.suspended ? "S" : "A") + "|";
+    }
+  }
+  return s;
+}
+
 async function tickLiveOdds() {
   if (_liveOddsBusy) return;
   _liveOddsBusy = true;
   try {
     const odds = await fetchLiveOdds();
+    const now = Date.now();
+
+    // Check each fixture for staleness
+    for (const item of odds) {
+      const fid = item.fixtureId;
+      const hash = oddsFingerprint(item.odds);
+      const prev = _oddsFingerprints[fid];
+
+      if (!prev) {
+        // First time seeing this fixture
+        _oddsFingerprints[fid] = { hash, lastChanged: now };
+      } else if (prev.hash !== hash) {
+        // Odds changed — update timestamp
+        _oddsFingerprints[fid] = { hash, lastChanged: now };
+      }
+      // else: same hash, keep old lastChanged
+
+      // If unchanged for > threshold, force-suspend all values
+      const age = now - (_oddsFingerprints[fid]?.lastChanged || now);
+      if (age > STALE_THRESHOLD_MS) {
+        for (const bet of item.odds) {
+          for (const v of bet.values) {
+            v.suspended = true;
+          }
+        }
+      }
+    }
+
+    // Clean up fingerprints for fixtures no longer in live odds
+    for (const fid of Object.keys(_oddsFingerprints)) {
+      if (!odds.find(o => String(o.fixtureId) === fid)) {
+        delete _oddsFingerprints[fid];
+      }
+    }
+
     currentLiveOdds = odds;
     if (odds.length > 0) {
       broadcast("liveOdds", odds);
