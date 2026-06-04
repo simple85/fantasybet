@@ -424,16 +424,14 @@ function evaluateSelection(sel, match) {
   // Asian Handicap full-time (4)
   if (betId === 4) return evalAsianHandicap(h, a, pick);
 
-  // Handicap Result 3-way (51) — e.g., "Home -1", "Draw -1", "Away -1"
+  // Handicap Result 3-way (51) — e.g., "Home +1", "Draw -3", "Away -2"
+  // Negative line → handicap on away (favorite). Positive line → handicap on home (underdog).
   if (betId === 51) {
     const m = pick.match(/^(Home|Draw|Away)\s+([+-]?\d+\.?\d*)$/);
     if (m) {
       const line = parseFloat(m[2]);
-      const adjH = h + (m[1] !== "Away" ? line : 0);
-      const adjA = a + (m[1] === "Away" ? line : 0);
-      // For 3-way handicap the handicap applies to Home side
-      const hAdj = h + line;
-      return evalResult(hAdj, a, m[1]);
+      if (line < 0) return evalResult(h, a + line, m[1]); // away gets handicap
+      else return evalResult(h + line, a, m[1]);           // home gets handicap
     }
   }
 
@@ -535,12 +533,13 @@ function evaluateSelection(sel, match) {
   if (/\basian handicap\b/.test(name) && !/half/.test(name)) return evalAsianHandicap(h, a, pick);
 
   // ── 3-Way Handicap ──
+  // Negative line → handicap on away (favorite). Positive line → handicap on home (underdog).
   if (/\b3.?way handicap\b/.test(name) && !/half/.test(name)) {
     const m3 = pick.match(/^(Home|Draw|Away)\s+([+-]?\d+\.?\d*)$/);
     if (m3) {
       const line = parseFloat(m3[2]);
-      const hAdj = h + line;
-      return evalResult(hAdj, a, m3[1]);
+      if (line < 0) return evalResult(h, a + line, m3[1]); // away gets handicap
+      else return evalResult(h + line, a, m3[1]);           // home gets handicap
     }
   }
 
