@@ -2,7 +2,7 @@
 <html lang="tr">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <title>BetZone</title>
   <link rel="stylesheet" href="css/style.css">
   <style>
@@ -1889,6 +1889,14 @@
       }
     }
 
+    function translateServerError(err) {
+      if (!err) return t("insufficientCredits");
+      if (err.includes("suspended")) return t("oddsSuspended");
+      if (err.includes("finished")) return t("matchFinished");
+      if (err.includes("Insufficient")) return t("insufficientCredits");
+      return err;
+    }
+
     async function placeBet() {
       const stake = parseFloat(document.getElementById("stakeInput").value) || 0;
       // Refresh credits from server
@@ -1930,7 +1938,7 @@
             updateUI();
             showToast(t("betPlaced") + " (" + t("system") + ")", "success");
           } else {
-            showToast(data.error || t("insufficientCredits"), "error");
+            showToast(translateServerError(data.error), "error");
           }
         } catch (e) {
           showToast("Connection error", "error");
@@ -1960,7 +1968,7 @@
             updateUI();
             showToast(t("betPlaced"), "success");
           } else {
-            showToast(data.error || t("insufficientCredits"), "error");
+            showToast(translateServerError(data.error), "error");
           }
         } catch (e) {
           showToast("Connection error", "error");

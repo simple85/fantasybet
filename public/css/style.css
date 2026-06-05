@@ -447,7 +447,7 @@ input {
   max-width: 1400px;
   margin: 0 auto;
   width: 100%;
-  padding-bottom: 60px;
+  padding-bottom: calc(60px + env(safe-area-inset-bottom, 0px));
 }
 
 .matches-section {
@@ -754,6 +754,7 @@ input {
   left: 0;
   right: 0;
   max-height: 50px;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
   overflow: hidden;
   display: flex;
   flex-direction: column;
