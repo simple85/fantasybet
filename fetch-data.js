@@ -31,6 +31,7 @@ const ALLOWED_BET_IDS = new Set([
   42, 43, 44, 45, 46, 47, 48, 49, 51, 52, 53, 63, 72, 77, 85, 86, 87,
 ]);
 
+
 // ── API Request ──
 function apiRequest(endpoint, params = {}) {
   return new Promise((resolve, reject) => {
@@ -233,6 +234,30 @@ async function fetchFixtureStatistics(fixtureId) {
   }
 }
 
+// ── Fetch match events (goals, cards with minute/player/team) ──
+async function fetchFixtureEvents(fixtureId) {
+  try {
+    const data = await apiRequest("fixtures/events", { fixture: fixtureId });
+    const events = data.response || [];
+    const goals = events
+      .filter(e => e.type === "Goal")
+      .sort((a, b) => (a.time.elapsed + (a.time.extra || 0) / 100) - (b.time.elapsed + (b.time.extra || 0) / 100))
+      .map((e, i) => ({
+        index: i + 1,
+        minute: e.time.elapsed,
+        extra: e.time.extra || 0,
+        teamId: e.team.id,
+        teamName: e.team.name,
+        player: e.player?.name || "",
+        detail: e.detail, // "Normal Goal", "Penalty", "Own Goal"
+      }));
+    return { goals, raw: events };
+  } catch (err) {
+    console.error(`  FAIL events fixture ${fixtureId}: ${err.message}`);
+    return null;
+  }
+}
+
 // ── File I/O ──
 function saveData(matches) {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -257,6 +282,7 @@ module.exports = {
   fetchLiveOdds,
   fetchPreMatchOdds,
   fetchFixtureStatistics,
+  fetchFixtureEvents,
   saveData,
   loadExistingData,
   formatDate,

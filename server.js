@@ -30,6 +30,7 @@ const {
   fetchLiveOdds,
   fetchPreMatchOdds,
   fetchFixtureStatistics,
+  fetchFixtureEvents,
   saveData,
   loadExistingData,
   formatDate,
@@ -411,7 +412,15 @@ function evaluateSelection(sel, match) {
     return "void"; // push — exact 0 = stake refund
   }
 
-  // ═══ FULL-TIME BETS (only need final score) ═══
+  // ═══ NAME-BASED EVALUATION (live bets use different IDs than pre-match) ═══
+  // If the bet has a marketLabel, try name-based matching FIRST
+  const name = (sel.marketLabel || "").toLowerCase();
+  if (name) {
+    const nameResult = evaluateByName(name, pick, h, a, total, ht, htH, htA, htTotal, h2H, h2A, h2Total, match, evalOU, evalResult, evalAsianHandicap);
+    if (nameResult !== null) return nameResult;
+  }
+
+  // ═══ FULL-TIME BETS — ID-BASED (Bet365 pre-match IDs) ═══
 
   // Match Winner (1) / Home/Away (2)
   if (betId === 1 || betId === 2) return evalResult(h, a, pick);
@@ -533,145 +542,269 @@ function evaluateSelection(sel, match) {
     if (pick === "No") return (!((htH > htA && h2H > h2A) || (htA > htH && h2A > h2H))) ? "won" : "lost";
   }
 
-  // ═══ NAME-BASED FALLBACK (live API uses different bet IDs) ═══
-  // Live bets store the API bet name in sel.marketLabel — use it to evaluate
-  const name = (sel.marketLabel || "").toLowerCase();
+  // ═══ ID-BASED FALLBACK (pre-match Bet365 bets without marketLabel match) ═══
+  return "void";
+}
 
-  // ── Full-time result bets ──
-  if (/\b(1x2|match winner)\b/.test(name) && !/half/.test(name)) return evalResult(h, a, pick);
-  if (/\bdraw no bet\b/.test(name) && !/half/.test(name)) {
+// ── Name-based settlement (handles live bets with different IDs) ──
+function evaluateByName(name, pick, h, a, total, ht, htH, htA, htTotal, h2H, h2A, h2Total, match, evalOU, evalResult, evalAsianHandicap) {
+  if (!name) return null;
+
+  // ═══ EVENT-BASED BETS (need match.events with goal data) ═══
+  const ev = match.events;
+  const goals = ev ? ev.goals || [] : [];
+  const homeId = match.home?.id;
+  const awayId = match.away?.id;
+
+  // 1x2 at N minutes — compute score at that minute
+  if (/\b1x2\s*-\s*(\d+)\s*min/i.test(name)) {
+    if (!ev) return null; // wait for events data
+    const minMatch = name.match(/1x2\s*-\s*(\d+)\s*min/i);
+    const targetMin = parseInt(minMatch[1]);
+    let hAtMin = 0, aAtMin = 0;
+    goals.forEach(g => { if (g.minute <= targetMin) { if (g.teamId === homeId) hAtMin++; else aAtMin++; } });
+    return evalResult(hAtMin, aAtMin, pick);
+  }
+
+  // Goal in interval — check first goal minute
+  if (/\bgoal in interval\b/i.test(name)) {
+    if (!ev) return null;
+    // Pick format: "0-10", "11-20", "21-30", etc. or "No Goal"
+    const isAway = /\baway\b/i.test(name);
+    const relevantGoals = isAway ? goals.filter(g => g.teamId === awayId) : goals;
+    const firstGoal = relevantGoals[0];
+    if (/no goal/i.test(pick)) return relevantGoals.length === 0 ? "won" : "lost";
+    const rangeMatch = pick.match(/(\d+)\s*-\s*(\d+)/);
+    if (rangeMatch && firstGoal) {
+      const lo = parseInt(rangeMatch[1]);
+      const hi = parseInt(rangeMatch[2]);
+      return (firstGoal.minute >= lo && firstGoal.minute <= hi) ? "won" : "lost";
+    }
+    if (rangeMatch && !firstGoal) return "lost"; // no goal at all
+    return "void";
+  }
+
+  // Goal Scorer / Anytime Goal Scorer
+  if (/\bgoal scorer\b/i.test(name)) {
+    if (!ev) return null;
+    // Pick is a player name — fuzzy match against goal events
+    const pickLower = pick.toLowerCase().trim();
+    const scored = goals.some(g => {
+      const pName = (g.player || "").toLowerCase();
+      return pName === pickLower || pName.includes(pickLower) || pickLower.includes(pName);
+    });
+    if (/\bno goal/i.test(pick)) return goals.length === 0 ? "won" : "lost";
+    return scored ? "won" : "lost";
+  }
+
+  // "To Qualify" — void (tournament context, can't determine from single match)
+  if (/\bto qualify\b/i.test(name)) return "void";
+
+  // "To Score 2 or More" — player scored 2+ goals
+  if (/\bto score \d+ or more\b/i.test(name)) {
+    if (!ev) return null;
+    const pickLower = pick.toLowerCase().trim();
+    if (/\bno\b/i.test(pick) || /\bnone\b/i.test(pick)) return "void";
+    const playerGoals = goals.filter(g => {
+      const pName = (g.player || "").toLowerCase();
+      return pName === pickLower || pName.includes(pickLower) || pickLower.includes(pName);
+    }).length;
+    const numMatch = name.match(/to score (\d+) or more/i);
+    const target = numMatch ? parseInt(numMatch[1]) : 2;
+    return playerGoals >= target ? "won" : "lost";
+  }
+
+  // "Which team will score the Nth goal?"
+  if (/\bwhich team.*score.*(\d+).*goal\b/i.test(name)) {
+    if (!ev) return null;
+    const nMatch = name.match(/(\d+)(?:st|nd|rd|th)?\s*goal/i);
+    const n = nMatch ? parseInt(nMatch[1]) : 1;
+    if (goals.length < n) {
+      // Nth goal never scored
+      return (/no goal|neither/i.test(pick)) ? "won" : "lost";
+    }
+    const nthGoal = goals[n - 1];
+    if (pick === "Home" || pick === "1") return nthGoal.teamId === homeId ? "won" : "lost";
+    if (pick === "Away" || pick === "2") return nthGoal.teamId === awayId ? "won" : "lost";
+    return "void";
+  }
+  // "Result / Both Teams To Score" — combo market (e.g., "Home & Yes"), complex evaluation
+  if (/\bresult.*both teams/i.test(name)) {
+    const both = h > 0 && a > 0;
+    // Picks like "Home & Yes", "Away & No", "Draw & Yes" etc.
+    if (/home.*yes/i.test(pick)) return (h > a && both) ? "won" : "lost";
+    if (/home.*no/i.test(pick)) return (h > a && !both) ? "won" : "lost";
+    if (/away.*yes/i.test(pick)) return (a > h && both) ? "won" : "lost";
+    if (/away.*no/i.test(pick)) return (a > h && !both) ? "won" : "lost";
+    if (/draw.*yes/i.test(pick)) return (h === a && both) ? "won" : "lost";
+    if (/draw.*no/i.test(pick)) return (h === a && !both) ? "won" : "lost";
+    return "void"; // unknown pick format
+  }
+  // "Away/Home Team to Score in Both Halves" — need HT data
+  if (/\bscore.*both halves/i.test(name) || /\bboth halves/i.test(name)) {
+    if (!ht) return null;
+    if (/\baway\b/i.test(name)) {
+      const scored1st = htA > 0;
+      const scored2nd = h2A > 0;
+      return pick === "Yes" ? (scored1st && scored2nd ? "won" : "lost") : (!scored1st || !scored2nd ? "won" : "lost");
+    }
+    if (/\bhome\b/i.test(name)) {
+      const scored1st = htH > 0;
+      const scored2nd = h2H > 0;
+      return pick === "Yes" ? (scored1st && scored2nd ? "won" : "lost") : (!scored1st || !scored2nd ? "won" : "lost");
+    }
+    return "void";
+  }
+
+  // ═══ FIRST HALF bets (check before full-time to prevent wrong match) ═══
+  if (/\b(1st half|first half|\(1st half\))\b/i.test(name)) {
+    if (ht === null) return null; // wait for HT data
+    if (/\b(1x2|match winner|winner|result)\b/i.test(name)) return evalResult(htH, htA, pick);
+    if (/\b(over.?under|goals?|total)\b/i.test(name)) return evalOU(htTotal, pick);
+    if (/\basian handicap\b/i.test(name)) return evalAsianHandicap(htH, htA, pick);
+    if (/\beuropean handicap\b/i.test(name)) {
+      const m3 = pick.match(/^(Home|Draw|Away)\s+([+-]?\d+\.?\d*)$/);
+      if (m3) {
+        const line = parseFloat(m3[2]);
+        if (line < 0) return evalResult(htH, htA + line, m3[1]);
+        else return evalResult(htH + line, htA, m3[1]);
+      }
+    }
+    if (/\bdraw no bet\b/i.test(name)) {
+      if (pick === "Home") return htH > htA ? "won" : htH === htA ? "void" : "lost";
+      if (pick === "Away") return htA > htH ? "won" : htH === htA ? "void" : "lost";
+    }
+    if (/\bboth teams?.*(score|goal)\b/i.test(name)) {
+      const both = htH > 0 && htA > 0;
+      return pick === "Yes" ? (both ? "won" : "lost") : (!both ? "won" : "lost");
+    }
+    // Corner/card 1st half — void (no half-specific stats)
+    if (/corner|card/i.test(name)) return "void";
+    return "void";
+  }
+
+  // ═══ SECOND HALF bets ═══
+  if (/\b(2nd half|second half|\(2nd half\))\b/i.test(name) || /\bto win 2nd half\b/i.test(name)) {
+    if (ht === null || h2H === null) return null; // wait for HT data
+    if (/\b(1x2|match winner|winner|result|to win)\b/i.test(name)) return evalResult(h2H, h2A, pick);
+    if (/\b(over.?under|goals?|total)\b/i.test(name)) return evalOU(h2Total, pick);
+    if (/\bboth teams?.*(score|goal)\b/i.test(name)) {
+      const both = h2H > 0 && h2A > 0;
+      return pick === "Yes" ? (both ? "won" : "lost") : (!both ? "won" : "lost");
+    }
+    if (/corner|card/i.test(name)) return "void";
+    return "void";
+  }
+
+  // ═══ FULL-TIME result bets ═══
+  if (/\b(1x2|match winner)\b/i.test(name)) return evalResult(h, a, pick);
+  if (/\bdraw no bet\b/i.test(name)) {
     if (pick === "Home") return h > a ? "won" : h === a ? "void" : "lost";
     if (pick === "Away") return a > h ? "won" : h === a ? "void" : "lost";
   }
-  if (/\bdouble chance\b/.test(name) && !/half/.test(name)) {
+  if (/\bdouble chance\b/i.test(name)) {
     if (pick === "Home or Draw") return h >= a ? "won" : "lost";
     if (pick === "Home or Away") return h !== a ? "won" : "lost";
     if (pick === "Away or Draw" || pick === "Draw or Away") return a >= h ? "won" : "lost";
   }
 
-  // ── Goals Over/Under ──
-  if (/\b(match goals|over.?under line)\b/.test(name)) return evalOU(total, pick);
-  if (/\bhome.*(goals?|total)\b/.test(name) || /\b(goals?|total).*home\b/.test(name)) return evalOU(h, pick);
-  if (/\baway.*(goals?|total)\b/.test(name) || /\b(goals?|total).*away\b/.test(name)) return evalOU(a, pick);
+  // ═══ Goals Over/Under ═══
+  if (/\b(match goals|over.?under line|over.?under)\b/i.test(name) && !/corner|card|shot|half/i.test(name)) return evalOU(total, pick);
+  // "How many goals will Away/Home Team score?" — team-specific
+  if (/\bhow many goals.*away\b/i.test(name)) return evalOU(a, pick);
+  if (/\bhow many goals.*home\b/i.test(name)) return evalOU(h, pick);
+  if (/\bhow many goals\b/i.test(name)) return evalOU(total, pick);
+  if (/\bhome.*(goals?|total)\b/i.test(name) && !/corner|card|shot|half/i.test(name)) return evalOU(h, pick);
+  if (/\baway.*(goals?|total)\b/i.test(name) && !/corner|card|shot|half|interval/i.test(name)) return evalOU(a, pick);
 
-  // ── Both Teams Score ──
-  if (/\bboth teams?.*(score|goal)\b/.test(name) && !/half/.test(name)) {
+  // ═══ Both Teams Score (full-time) ═══
+  if (/\bboth teams?.*(score|goal)\b/i.test(name)) {
     const both = h > 0 && a > 0;
     return pick === "Yes" ? (both ? "won" : "lost") : (!both ? "won" : "lost");
   }
 
-  // ── Odd/Even ──
-  if (/\bodd.?even\b/.test(name) && !/half/.test(name)) {
+  // ═══ Odd/Even ═══
+  if (/\bodd.?even\b/i.test(name)) {
     return pick === "Odd" ? (total % 2 !== 0 ? "won" : "lost") : (total % 2 === 0 ? "won" : "lost");
   }
 
-  // ── Asian Handicap ──
-  if (/\basian handicap\b/.test(name) && !/half/.test(name)) return evalAsianHandicap(h, a, pick);
+  // ═══ Asian Handicap (full-time) ═══
+  if (/\basian handicap\b/i.test(name)) return evalAsianHandicap(h, a, pick);
 
-  // ── 3-Way Handicap ──
-  // Negative line → handicap on away (favorite). Positive line → handicap on home (underdog).
-  if (/\b3.?way handicap\b/.test(name) && !/half/.test(name)) {
+  // ═══ European Handicap / 3-Way Handicap (full-time) ═══
+  if (/\b(3.?way handicap|european handicap)\b/i.test(name)) {
     const m3 = pick.match(/^(Home|Draw|Away)\s+([+-]?\d+\.?\d*)$/);
     if (m3) {
       const line = parseFloat(m3[2]);
-      if (line < 0) return evalResult(h, a + line, m3[1]); // away gets handicap
-      else return evalResult(h + line, a, m3[1]);           // home gets handicap
+      if (line < 0) return evalResult(h, a + line, m3[1]);
+      else return evalResult(h + line, a, m3[1]);
     }
   }
 
-  // ── Exact Goals / How Many Goals ──
-  if (/\bhow many goals\b/.test(name) || /\bexact.*(goals?|number)\b/.test(name)) {
+  // ═══ Exact Goals ═══
+  if (/\bexact.*(goals?|number)\b/i.test(name)) {
     const num = parseInt(pick);
     if (!isNaN(num)) return total === num ? "won" : "lost";
-    if (pick === "No goal" || pick === "No Goal") return total === 0 ? "won" : "lost";
-    if (pick.includes("+") || pick.includes("or more")) {
+    if (/no goal/i.test(pick)) return total === 0 ? "won" : "lost";
+    if (pick.includes("+") || /or more/i.test(pick)) {
       const min = parseInt(pick); if (!isNaN(min)) return total >= min ? "won" : "lost";
     }
   }
 
-  // ── Second half bets (need HT score) ──
-  if (ht === null && /\b(2nd half|second half)\b/.test(name)) return null; // wait for HT data
-
-  if (/\b(to win|winner).*(2nd|second) half\b/.test(name) || /\b(2nd|second) half.*(winner|result)\b/.test(name)) {
-    if (h2H === null) return null;
-    return evalResult(h2H, h2A, pick);
-  }
-  if (/\b(over.?under|goals?).*(2nd|second) half\b/.test(name) || /\b(2nd|second) half.*(over.?under|goals?)\b/.test(name)) {
-    if (h2Total === null) return null;
-    return evalOU(h2Total, pick);
-  }
-  if (/\bboth teams?.*(score|goal).*(2nd|second) half\b/.test(name)) {
-    if (h2H === null) return null;
-    const both = h2H > 0 && h2A > 0;
-    return pick === "Yes" ? (both ? "won" : "lost") : (!both ? "won" : "lost");
-  }
-
-  // ── First half bets ──
-  if (ht === null && /\b(1st half|first half)\b/.test(name)) return null; // wait for HT data
-
-  if (/\b(to win|winner).*(1st|first) half\b/.test(name) || /\b(1st|first) half.*(winner|result)\b/.test(name)) {
-    return evalResult(htH, htA, pick);
-  }
-  if (/\b(over.?under|goals?).*(1st|first) half\b/.test(name) || /\b(1st|first) half.*(over.?under|goals?)\b/.test(name)) {
-    return evalOU(htTotal, pick);
-  }
-
   // ═══ STATISTICS-BASED BETS (corners, cards, shots) ═══
-  const st = match.stats;
-  if (!st || !st.home || !st.away) return "void"; // no stats available — void
+  if (/corner|card|shot/i.test(name)) {
+    const st = match.stats;
+    if (!st || !st.home || !st.away) return "void";
 
-  const totalCorners = st.totalCorners;
-  const homeCorners = st.home.corners;
-  const awayCorners = st.away.corners;
-  const totalCards = st.totalCards;
-  const homeCards = st.home.totalCards;
-  const awayCards = st.away.totalCards;
-  const totalShots = st.totalShotsOnGoal;
-  const homeShots = st.home.shotsOnGoal;
-  const awayShots = st.away.shotsOnGoal;
+    const totalCorners = st.totalCorners;
+    const homeCorners = st.home.corners;
+    const awayCorners = st.away.corners;
+    const totalCards = st.totalCards;
+    const homeCards = st.home.totalCards;
+    const awayCards = st.away.totalCards;
+    const totalShots = st.totalShotsOnGoal;
+    const homeShots = st.home.shotsOnGoal;
+    const awayShots = st.away.shotsOnGoal;
 
-  // ── Corner bets ──
-  if (/\b(total|match).*corner/i.test(name)) return evalOU(totalCorners, pick);
-  if (/\bhome.*corner/i.test(name)) return evalOU(homeCorners, pick);
-  if (/\baway.*corner/i.test(name)) return evalOU(awayCorners, pick);
-  if (/\bcorner.*over.?under/i.test(name) || /\bcorner.*line/i.test(name)) return evalOU(totalCorners, pick);
-
-  // Race to N corners — pick is "Home", "Away", or "Neither"/"No Winner"
-  if (/\brace to.*corner/i.test(name)) {
-    const raceMatch = name.match(/race to (?:the )?(\d+)/i);
-    if (raceMatch) {
-      const target = parseInt(raceMatch[1]);
-      const homeReached = homeCorners >= target;
-      const awayReached = awayCorners >= target;
-      if (pick === "Home" || pick === "1") return homeReached ? "won" : "lost";
-      if (pick === "Away" || pick === "2") return awayReached ? "won" : "lost";
-      if (/neither|no winner|no goal/i.test(pick)) return (!homeReached && !awayReached) ? "won" : "lost";
+    // Corner O/U
+    if (/\b(total|match).*corner/i.test(name) && !/3.?way|1st|2nd|half/i.test(name)) return evalOU(totalCorners, pick);
+    if (/\btotal corners\b/i.test(name) && !/3.?way|1st|2nd|half/i.test(name)) return evalOU(totalCorners, pick);
+    if (/\bhome.*corner/i.test(name)) return evalOU(homeCorners, pick);
+    if (/\baway.*corner/i.test(name)) return evalOU(awayCorners, pick);
+    if (/\bcorner.*over.?under/i.test(name) || /\bcorner.*line/i.test(name)) return evalOU(totalCorners, pick);
+    // Total Corners 3-way — just evaluate O/U, the 3-way part is in the pick
+    if (/\btotal corners.*3.?way/i.test(name) && !/half/i.test(name)) return evalOU(totalCorners, pick);
+    // Half-specific corner 3-way — can't evaluate without half stats
+    if (/\btotal corners.*3.?way.*(1st|2nd|half)/i.test(name)) return "void";
+    // Race to N corners
+    if (/\brace to.*corner/i.test(name)) {
+      const raceMatch = name.match(/race to (?:the )?(\d+)/i);
+      if (raceMatch) {
+        const target = parseInt(raceMatch[1]);
+        if (pick === "Home" || pick === "1") return homeCorners >= target ? "won" : "lost";
+        if (pick === "Away" || pick === "2") return awayCorners >= target ? "won" : "lost";
+        if (/neither|no winner/i.test(pick)) return (homeCorners < target && awayCorners < target) ? "won" : "lost";
+      }
     }
+    // Which team Nth corner / Last corner — need event data, void
+    if (/\bwhich team.*corner/i.test(name) || /\blast corner/i.test(name)) return "void";
+    // Corner match result
+    if (/\bcorner.*(match|result|winner)/i.test(name) || /\b(match|result).*corner/i.test(name)) {
+      return evalResult(homeCorners, awayCorners, pick);
+    }
+    // Card bets
+    if (/\b(total|match).*card/i.test(name)) return evalOU(totalCards, pick);
+    if (/\bhome.*card/i.test(name)) return evalOU(homeCards, pick);
+    if (/\baway.*card/i.test(name)) return evalOU(awayCards, pick);
+    if (/\bcard.*over.?under/i.test(name) || /\bcard.*line/i.test(name)) return evalOU(totalCards, pick);
+    // Shot bets
+    if (/\b(total|match).*shot/i.test(name)) return evalOU(totalShots, pick);
+    if (/\bhome.*shot/i.test(name)) return evalOU(homeShots, pick);
+    if (/\baway.*shot/i.test(name)) return evalOU(awayShots, pick);
+    if (/\bshot.*on.*goal/i.test(name)) return evalOU(totalShots, pick);
   }
 
-  // "Which team will score the Nth corner?" / "Last Corner" — can't determine Nth corner from totals alone
-  // We only know final totals, so void these (would need event-by-event data)
-  if (/\bwhich team.*corner/i.test(name) || /\blast corner/i.test(name)) return "void";
-
-  // Corner match result (which team got more corners)
-  if (/\bcorner.*(match|result|winner)/i.test(name) || /\b(match|result).*corner/i.test(name)) {
-    return evalResult(homeCorners, awayCorners, pick);
-  }
-
-  // ── Card bets ──
-  if (/\b(total|match).*card/i.test(name)) return evalOU(totalCards, pick);
-  if (/\bhome.*card/i.test(name)) return evalOU(homeCards, pick);
-  if (/\baway.*card/i.test(name)) return evalOU(awayCards, pick);
-  if (/\bcard.*over.?under/i.test(name) || /\bcard.*line/i.test(name)) return evalOU(totalCards, pick);
-
-  // ── Shot on goal bets ──
-  if (/\b(total|match).*shot/i.test(name)) return evalOU(totalShots, pick);
-  if (/\bhome.*shot/i.test(name)) return evalOU(homeShots, pick);
-  if (/\baway.*shot/i.test(name)) return evalOU(awayShots, pick);
-  if (/\bshot.*on.*goal/i.test(name)) return evalOU(totalShots, pick);
-
-  // ═══ TRULY UNEVALUABLE (player-specific, exotic props) ═══
-  return "void";
+  return null; // no name match — fall through to ID-based
 }
 
 let _settleBusy = false;
@@ -685,25 +818,40 @@ async function _settleBetsInner() {
   if (matches.length === 0 || bets.length === 0) return { settled: 0 };
 
   // Fetch missing stats only for finished matches that have pending bets
-  const finishedNeedStats = new Set();
+  // Fetch missing stats and events for finished matches with pending bets
+  const finishedNeedData = new Set();
   for (const bet of bets) {
     if (bet.status !== "pending") continue;
     for (const sel of bet.selections) {
       const match = matches.find(m => m.id === sel.matchId);
-      if (match && SETTLED_STATUSES_BET.has(match.status) && !match.stats) {
-        finishedNeedStats.add(sel.matchId);
+      if (match && SETTLED_STATUSES_BET.has(match.status) && (!match.stats || !match.events)) {
+        finishedNeedData.add(sel.matchId);
       }
     }
   }
-  for (const mid of finishedNeedStats) {
-    try {
-      const stats = await fetchFixtureStatistics(mid);
-      if (stats && stats.home && stats.away) {
-        const match = matches.find(m => m.id === mid);
-        if (match) match.stats = stats;
-        console.log(`[SETTLE] Fetched missing stats for ${mid}`);
-      }
-    } catch (e) { console.error(`[SETTLE] Stats fetch failed for ${mid}: ${e.message}`); }
+  for (const mid of finishedNeedData) {
+    const match = matches.find(m => m.id === mid);
+    if (!match) continue;
+    // Fetch stats if missing
+    if (!match.stats) {
+      try {
+        const stats = await fetchFixtureStatistics(mid);
+        if (stats && stats.home && stats.away) {
+          match.stats = stats;
+          console.log(`[SETTLE] Fetched missing stats for ${mid}`);
+        }
+      } catch (e) { console.error(`[SETTLE] Stats fetch failed for ${mid}: ${e.message}`); }
+    }
+    // Fetch events if missing
+    if (!match.events) {
+      try {
+        const events = await fetchFixtureEvents(mid);
+        if (events) {
+          match.events = events;
+          console.log(`[SETTLE] Fetched events for ${mid}: ${events.goals.length} goals`);
+        }
+      } catch (e) { console.error(`[SETTLE] Events fetch failed for ${mid}: ${e.message}`); }
+    }
   }
 
   let settled = 0;
