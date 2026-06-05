@@ -697,7 +697,7 @@ function evaluateByName(name, pick, h, a, total, ht, htH, htA, htTotal, h2H, h2A
   }
 
   // ═══ FULL-TIME result bets ═══
-  if (/\b(1x2|match winner)\b/i.test(name)) return evalResult(h, a, pick);
+  if (/\b(1x2|match winner|fulltime result)\b/i.test(name) && !/half/i.test(name)) return evalResult(h, a, pick);
   if (/\bdraw no bet\b/i.test(name)) {
     if (pick === "Home") return h > a ? "won" : h === a ? "void" : "lost";
     if (pick === "Away") return a > h ? "won" : h === a ? "void" : "lost";
@@ -706,6 +706,45 @@ function evaluateByName(name, pick, h, a, total, ht, htH, htA, htTotal, h2H, h2A
     if (pick === "Home or Draw") return h >= a ? "won" : "lost";
     if (pick === "Home or Away") return h !== a ? "won" : "lost";
     if (pick === "Away or Draw" || pick === "Draw or Away") return a >= h ? "won" : "lost";
+  }
+
+  // ═══ Final Score / Correct Score ═══
+  if (/\b(final score|correct score)\b/i.test(name) && !/half/i.test(name)) {
+    // Pick format: "1:0", "2:1", etc.
+    return pick === h + ":" + a ? "won" : "lost";
+  }
+  if (/\b(final score|correct score).*(1st|first) half\b/i.test(name) || /\bcorrect score.*\(1st/i.test(name)) {
+    if (!ht) return null;
+    return pick === htH + ":" + htA ? "won" : "lost";
+  }
+
+  // ═══ Half Time / Full Time ═══
+  if (/\bhalf.*time.*full.*time\b/i.test(name)) {
+    if (!ht) return null;
+    const htResult = htH > htA ? "Home" : htH === htA ? "Draw" : "Away";
+    const ftResult = h > a ? "Home" : h === a ? "Draw" : "Away";
+    // Pick format: "Home/Home", "Draw/Away", etc.
+    const expected = htResult + "/" + ftResult;
+    return pick === expected ? "won" : "lost";
+  }
+
+  // ═══ Last Team to Score (3 way) ═══
+  if (/\blast team.*score\b/i.test(name)) {
+    if (!ev) return null;
+    if (goals.length === 0) return (/no goal|neither/i.test(pick)) ? "won" : "lost";
+    const lastGoal = goals[goals.length - 1];
+    if (pick === "Home" || pick === "1") return lastGoal.teamId === homeId ? "won" : "lost";
+    if (pick === "Away" || pick === "2") return lastGoal.teamId === awayId ? "won" : "lost";
+    if (/no goal|neither/i.test(pick)) return "lost"; // there were goals
+    return "void";
+  }
+
+  // ═══ Team Score a Goal in 2nd Half ═══
+  if (/\b(home|away).*score.*goal.*2nd half\b/i.test(name) || /\b(home|away).*score.*goal.*\(2nd/i.test(name)) {
+    if (!ht) return null;
+    const isAway = /away/i.test(name);
+    const scored2nd = isAway ? h2A > 0 : h2H > 0;
+    return pick === "Yes" ? (scored2nd ? "won" : "lost") : (!scored2nd ? "won" : "lost");
   }
 
   // ═══ Goals Over/Under ═══

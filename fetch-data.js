@@ -27,9 +27,18 @@ const BET365_ID = 8;
 // Pre-match bet IDs whitelist (Goal Line 50, 55 removed)
 const ALLOWED_BET_IDS = new Set([
   1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 13, 14, 15, 16, 17, 18, 19,
-  20, 21, 22, 25, 26, 29, 31, 34, 35, 36, 37, 38, 39, 40,
-  42, 43, 44, 45, 46, 47, 48, 49, 51, 52, 53, 63, 72, 77, 85, 86, 87,
+  20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 33, 34, 35, 36, 37, 38, 39, 40,
+  42, 43, 44, 45, 46, 47, 48, 49, 51, 52, 53, 55, 58, 59, 62, 63, 64, 67, 68, 69, 70,
+  72, 73, 77, 85, 86, 87, 109, 132,
 ]);
+
+// When a fixture has both of these, hide the less useful duplicate
+// Key = hide this ID, Value = only if this ID also exists
+const LIVE_DEDUP = [
+  { hide: 25, ifExists: 36 },  // "Match Goals" hidden when "Over/Under Line" present (sharper odds, more lines)
+  { hide: 16, ifExists: 39 },  // "How many goals Away" hidden when "Away Team Goals" present (O/U vs exact)
+  { hide: 67, ifExists: 58 },  // "How many goals Home" hidden when "Home Team Goals" present (O/U vs exact)
+];
 
 
 // ── API Request ──
@@ -158,7 +167,14 @@ async function fetchLiveOdds() {
       finished: item.status?.finished || false,
     },
     update: item.update,
-    odds: (item.odds || []).filter(bet => ALLOWED_BET_IDS.has(bet.id)).map(bet => ({
+    odds: (item.odds || []).filter(bet => {
+      if (!ALLOWED_BET_IDS.has(bet.id)) return false;
+      // Dedup: hide duplicate market if the better version exists
+      for (const rule of LIVE_DEDUP) {
+        if (bet.id === rule.hide && (item.odds || []).some(b => b.id === rule.ifExists)) return false;
+      }
+      return true;
+    }).map(bet => ({
       id: bet.id,
       name: bet.name,
       values: (bet.values || []).map(v => {

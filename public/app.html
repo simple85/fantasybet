@@ -1347,6 +1347,24 @@
         "Race to the 9th corner?": "9. Köşe Vuruşu Yarışı",
         "Which team will score the 2nd goal?": "2. Golü Kim Atar?",
         "Which team will score the 6th corner? (2 Way)": "6. Köşe Vuruşu Kim Atar?",
+        "Fulltime Result": "Maç Sonucu",
+        "Final Score": "Skor Tahmini",
+        "Correct Score (1st Half)": "Skor Tahmini (İlk Yarı)",
+        "Asian Handicap": "Asya Handikap",
+        "Home Team Goals": "İç Saha Gol Sayısı",
+        "Away Team Goals": "Deplasman Gol Sayısı",
+        "Both Teams to Score": "Karşılıklı Gol",
+        "Both Teams To Score (1st Half)": "Karşılıklı Gol (İlk Yarı)",
+        "Goals Odd/Even": "Gol Tek/Çift",
+        "Half Time/Full Time": "İlk Yarı / Maç Sonucu",
+        "Last Team to Score (3 way)": "Son Golü Atan Takım",
+        "Home Team Score a Goal (2nd Half)": "İç Saha 2. Yarıda Gol Atar mı?",
+        "Away Team Score a Goal (2nd Half)": "Deplasman 2. Yarıda Gol Atar mı?",
+        "Home Team to Score in Both Halves": "İç Saha Her Yarıda Gol Atar mı?",
+        "Over/Under Line (1st Half)": "Gol Üst/Alt (İlk Yarı)",
+        "Which team will score the 1st goal?": "1. Golü Kim Atar?",
+        "Which team will score the 4th goal?": "4. Golü Kim Atar?",
+        "Which team will score the 7th goal?": "7. Golü Kim Atar?",
       },
       de: {
         "1x2 (1st Half)": "1x2 (1. Halbzeit)",
@@ -1798,10 +1816,20 @@
           pickLabel: pick,
           odd: parseFloat(value)
         });
+        // Auto-switch to system if multiple bets from the same match
+        if (betSlipMode === "combined" && hasSameMatchDuplicates()) {
+          setBetSlipMode("system");
+        }
       }
 
       renderBetSlip();
       syncOddButtons();
+    }
+
+    // Check if betslip has multiple selections from the same match
+    function hasSameMatchDuplicates() {
+      const matchIds = betSlip.map(s => s.matchId);
+      return new Set(matchIds).size < matchIds.length;
     }
 
     function renderBetSlip() {
@@ -1819,8 +1847,8 @@
       modeToggle.style.display = count >= 2 ? "flex" : "none";
       document.getElementById("modeCombined").textContent = t("combined");
       document.getElementById("modeSystem").textContent = t("system");
-      // Reset to combined if only 1 selection (system doesn't make sense for 1)
-      if (count < 2 && betSlipMode === "system") setBetSlipMode("combined");
+      // Reset to combined if only 1 selection or no same-match duplicates remain
+      if (betSlipMode === "system" && (count < 2 || !hasSameMatchDuplicates())) setBetSlipMode("combined");
       if (count === 0) sidebar.classList.remove("open");
       // Auto-expand on first bet only
       if (count === 1 && wasEmpty) sidebar.classList.add("open");
@@ -1846,6 +1874,10 @@
     function setStake(a) { document.getElementById("stakeInput").value = a; updateSlipSummary(); }
 
     function setBetSlipMode(mode) {
+      if (mode === "combined" && hasSameMatchDuplicates()) {
+        showToast(t("sameMatchCombinedError"), "error");
+        return;
+      }
       betSlipMode = mode;
       document.getElementById("modeCombined").classList.toggle("active", mode === "combined");
       document.getElementById("modeSystem").classList.toggle("active", mode === "system");
