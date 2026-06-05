@@ -461,6 +461,7 @@
 
       sseSource.addEventListener("connected", (e) => {
         sseConnected = true;
+        _maintenanceFailCount = 0;
         document.getElementById("sseDot").className = "sse-dot connected";
         console.log("[SSE] Connected", JSON.parse(e.data));
       });
@@ -521,40 +522,42 @@
 
     // ── Maintenance mode detection ──
     let _maintenanceActive = false;
-    let _maintenanceTimer = null;
-    let _maintenanceCountdown = 360;
+    let _maintenanceFailCount = 0;
+    const _maintenanceFailThreshold = 3;
 
     function startMaintenanceCheck() {
-      if (_maintenanceTimer) return;
-      // Wait 10 seconds before showing — brief disconnects are normal
-      _maintenanceTimer = setTimeout(async () => {
-        try {
-          const res = await fetch("/api/status", { cache: "no-store" });
-          if (res.ok) { _maintenanceTimer = null; return; } // server is back
-        } catch (e) {}
-        // Server truly down — show maintenance
-        showMaintenance();
-      }, 10000);
+      if (_maintenanceActive) return;
+      _maintenanceFailCount++;
+      if (_maintenanceFailCount < _maintenanceFailThreshold) return;
+      checkServerDown();
+    }
+
+    async function checkServerDown() {
+      if (_maintenanceActive) return;
+      try {
+        const res = await fetch("/api/status", { cache: "no-store" });
+        if (res.ok) { _maintenanceFailCount = 0; return; }
+      } catch (e) {}
+      showMaintenance();
     }
 
     function showMaintenance() {
       _maintenanceActive = true;
-      _maintenanceCountdown = 360;
+      let countdown = 360;
       const overlay = document.getElementById("maintenanceOverlay");
       overlay.style.display = "flex";
 
       const tick = () => {
-        if (_maintenanceCountdown <= 0) { _maintenanceCountdown = 0; }
-        const min = Math.floor(_maintenanceCountdown / 60);
-        const sec = _maintenanceCountdown % 60;
+        if (countdown <= 0) countdown = 0;
+        const min = Math.floor(countdown / 60);
+        const sec = countdown % 60;
         document.getElementById("maintenanceCountdown").textContent = min + ":" + (sec < 10 ? "0" : "") + sec;
-        document.getElementById("maintenanceBar").style.width = (_maintenanceCountdown / 360 * 100) + "%";
-        _maintenanceCountdown--;
+        document.getElementById("maintenanceBar").style.width = (countdown / 360 * 100) + "%";
+        countdown--;
       };
       tick();
       const countdownInterval = setInterval(tick, 1000);
 
-      // Poll server every 5 seconds
       const pollInterval = setInterval(async () => {
         try {
           const res = await fetch("/api/status", { cache: "no-store" });
@@ -562,10 +565,10 @@
             clearInterval(countdownInterval);
             clearInterval(pollInterval);
             _maintenanceActive = false;
-            _maintenanceTimer = null;
+            _maintenanceFailCount = 0;
             window.location.reload();
           }
-        } catch (e) {} // still down
+        } catch (e) {}
       }, 5000);
     }
 
