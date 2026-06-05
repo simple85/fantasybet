@@ -359,16 +359,6 @@
   <div class="toast-container" id="toastContainer"></div>
   <div id="oddsChangeModal"></div>
 
-  <!-- Maintenance overlay — shown when server goes down during deploy -->
-  <div id="maintenanceOverlay" style="display:none; position:fixed; inset:0; z-index:99999; background:var(--bg-primary); color:var(--text-primary); flex-direction:column; align-items:center; justify-content:center; gap:1.5rem; text-align:center; padding:2rem;">
-    <div style="font-size:3rem;">🔧</div>
-    <h2 style="font-size:1.3rem; font-weight:700; margin:0;">Güncelleme Yapılıyor / Maintenance</h2>
-    <p style="color:var(--text-muted); font-size:0.9rem; margin:0; max-width:400px;">Site kısa süre içinde tekrar aktif olacaktır.<br>The site will be back shortly.</p>
-    <div style="font-family:var(--font-mono); font-size:2.5rem; font-weight:700; color:var(--accent);" id="maintenanceCountdown">6:00</div>
-    <div style="width:200px; height:4px; background:var(--bg-input); border-radius:2px; overflow:hidden;">
-      <div id="maintenanceBar" style="height:100%; background:var(--accent); width:100%; transition:width 1s linear;"></div>
-    </div>
-  </div>
 
   <script src="js/config.js"></script>
   <script src="js/i18n.js"></script>
@@ -461,7 +451,6 @@
 
       sseSource.addEventListener("connected", (e) => {
         sseConnected = true;
-        _maintenanceFailCount = 0;
         document.getElementById("sseDot").className = "sse-dot connected";
         console.log("[SSE] Connected", JSON.parse(e.data));
       });
@@ -515,61 +504,7 @@
       sseSource.onerror = () => {
         sseConnected = false;
         document.getElementById("sseDot").className = "sse-dot disconnected";
-        // EventSource auto-reconnects — but detect prolonged outage for maintenance screen
-        if (!_maintenanceActive) startMaintenanceCheck();
       };
-    }
-
-    // ── Maintenance mode detection ──
-    let _maintenanceActive = false;
-    let _maintenanceFailCount = 0;
-    const _maintenanceFailThreshold = 3;
-
-    function startMaintenanceCheck() {
-      if (_maintenanceActive) return;
-      _maintenanceFailCount++;
-      if (_maintenanceFailCount < _maintenanceFailThreshold) return;
-      checkServerDown();
-    }
-
-    async function checkServerDown() {
-      if (_maintenanceActive) return;
-      try {
-        const res = await fetch("/api/status", { cache: "no-store" });
-        if (res.ok) { _maintenanceFailCount = 0; return; }
-      } catch (e) {}
-      showMaintenance();
-    }
-
-    function showMaintenance() {
-      _maintenanceActive = true;
-      let countdown = 360;
-      const overlay = document.getElementById("maintenanceOverlay");
-      overlay.style.display = "flex";
-
-      const tick = () => {
-        if (countdown <= 0) countdown = 0;
-        const min = Math.floor(countdown / 60);
-        const sec = countdown % 60;
-        document.getElementById("maintenanceCountdown").textContent = min + ":" + (sec < 10 ? "0" : "") + sec;
-        document.getElementById("maintenanceBar").style.width = (countdown / 360 * 100) + "%";
-        countdown--;
-      };
-      tick();
-      const countdownInterval = setInterval(tick, 1000);
-
-      const pollInterval = setInterval(async () => {
-        try {
-          const res = await fetch("/api/status", { cache: "no-store" });
-          if (res.ok) {
-            clearInterval(countdownInterval);
-            clearInterval(pollInterval);
-            _maintenanceActive = false;
-            _maintenanceFailCount = 0;
-            window.location.reload();
-          }
-        } catch (e) {}
-      }, 5000);
     }
 
     // ── Handle live odds from SSE (every 5s) ──
