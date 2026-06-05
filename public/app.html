@@ -796,7 +796,7 @@
     function rejectOddChange(index) {
       betSlip.splice(index, 1);
       renderBetSlip();
-      renderMatches();
+      syncOddButtons();
       closeOddsChangeModal();
     }
 
@@ -1781,6 +1781,18 @@
       return betSlip.some(s => s.matchId === matchId && s.betId === betId && s.pick === pick);
     }
 
+    // Lightweight: sync .selected class on all odd buttons without rebuilding DOM
+    function syncOddButtons() {
+      const selectedKeys = new Set();
+      betSlip.forEach(s => selectedKeys.add(s.matchId + "-" + s.betId + "-" + s.pick));
+      document.querySelectorAll('.odd-btn').forEach(btn => {
+        const keyEl = btn.querySelector('[data-odd-key]');
+        if (!keyEl) return;
+        const key = keyEl.getAttribute('data-odd-key');
+        btn.classList.toggle('selected', selectedKeys.has(key));
+      });
+    }
+
     function toggleOdd(matchId, betId, pick, value, betName) {
       const match = matches.find(m => m.id === matchId);
       const existingIdx = betSlip.findIndex(s => s.matchId === matchId && s.betId === betId);
@@ -1806,7 +1818,7 @@
       }
 
       renderBetSlip();
-      renderMatches();
+      syncOddButtons();
     }
 
     function renderBetSlip() {
@@ -1846,8 +1858,8 @@
       updateSlipSummary();
     }
 
-    function removeFromSlip(i) { betSlip.splice(i, 1); renderBetSlip(); renderMatches(); }
-    function clearSlip() { betSlip = []; document.getElementById("stakeInput").value = ""; renderBetSlip(); renderMatches(); }
+    function removeFromSlip(i) { betSlip.splice(i, 1); renderBetSlip(); syncOddButtons(); }
+    function clearSlip() { betSlip = []; document.getElementById("stakeInput").value = ""; renderBetSlip(); syncOddButtons(); }
     function setStake(a) { document.getElementById("stakeInput").value = a; updateSlipSummary(); }
 
     function setBetSlipMode(mode) {

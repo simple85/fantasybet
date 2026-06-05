@@ -19,6 +19,7 @@
 //   settled         – after bet settlement
 
 const express = require("express");
+const compression = require("compression");
 const path = require("path");
 const fs = require("fs");
 require("dotenv").config();
@@ -100,6 +101,7 @@ if (matches.length > 0) {
 }
 
 // ── Middleware ──
+app.use(compression());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
 
@@ -287,10 +289,14 @@ app.get("/api/bets/:userId", (req, res) => {
 // MATCH DATA ENDPOINT
 // ══════════════════════════════════════════
 app.get("/api/matches", (req, res) => {
+  // Only send matches the client will actually display (have odds or are live)
+  const relevant = matches.filter(m =>
+    (m.bets && m.bets.length > 0) || LIVE_SHORT.has(m.statusShort)
+  );
   res.json({
     lastUpdated: lastMatchUpdate,
     matchCount: matches.length,
-    matches,
+    matches: relevant,
     liveOdds: currentLiveOdds,
   });
 });
