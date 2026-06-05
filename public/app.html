@@ -1099,7 +1099,7 @@
       for (const [mid, tabId] of Object.entries(activeTabs)) {
         const card = document.getElementById("card-" + mid);
         if (!card) continue;
-        const tab = card.querySelector('.market-tab[onclick*="\\'" + tabId + "\\'"]');
+        const tab = card.querySelector(".market-tab[onclick*=\"'" + tabId + "'\"]");
         if (tab) {
           card.querySelectorAll('.market-tab').forEach(t => t.classList.remove('active'));
           card.querySelectorAll('.market-panel').forEach(p => p.classList.remove('show'));
