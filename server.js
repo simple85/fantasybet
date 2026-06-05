@@ -323,8 +323,8 @@ app.post("/api/fetch/prematch", async (req, res) => {
   try { await refreshPreMatchOdds(); res.json({ success: true }); }
   catch (err) { res.status(500).json({ success: false, error: err.message }); }
 });
-app.post("/api/settle", (req, res) => {
-  const result = settleBets();
+app.post("/api/settle", async (req, res) => {
+  const result = await settleBets();
   res.json({ success: true, ...result });
 });
 
@@ -640,9 +640,28 @@ function evaluateSelection(sel, match) {
   return "void";
 }
 
-function settleBets() {
+async function settleBets() {
   const bets = readBets();
   if (matches.length === 0 || bets.length === 0) return { settled: 0 };
+
+  // Fetch missing stats for finished matches that have pending bets
+  const pendingMatchIds = new Set();
+  for (const bet of bets) {
+    if (bet.status !== "pending") continue;
+    for (const sel of bet.selections) pendingMatchIds.add(sel.matchId);
+  }
+  for (const mid of pendingMatchIds) {
+    const match = matches.find(m => m.id === mid);
+    if (match && SETTLED_STATUSES_BET.has(match.status) && !match.stats) {
+      try {
+        const stats = await fetchFixtureStatistics(mid);
+        if (stats && stats.home && stats.away) {
+          match.stats = stats;
+          console.log(`[SETTLE] Fetched missing stats for ${mid}`);
+        }
+      } catch (e) { console.error(`[SETTLE] Stats fetch failed for ${mid}: ${e.message}`); }
+    }
+  }
 
   let settled = 0;
   const users = readUsers();
@@ -665,7 +684,7 @@ function settleBets() {
       if (!SETTLED_STATUSES_BET.has(match.status)) { allFinished = false; continue; }
 
       const result = evaluateSelection(sel, match);
-      if (result === null) { allFinished = false; continue; } // missing data (e.g., no HT score) — wait
+      if (result === null) { allFinished = false; continue; }
       sel.result = result;
       if (result === "void") anyVoid = true;
       else if (result === "lost") anyLost = true;
@@ -882,7 +901,7 @@ async function tickLiveFixtures() {
         }
       }
       saveData(matches);
-      const result = settleBets();
+      const result = await settleBets();
       if (result.settled > 0) {
         broadcast("settled", { settled: result.settled, time: new Date().toISOString() });
       }
@@ -1007,8 +1026,8 @@ function startEngine() {
   setInterval(tickLiveFixtures, 15000);
 
   // ── Settlement safety net: every 60 seconds ──
-  setInterval(() => {
-    const result = settleBets();
+  setInterval(async () => {
+    const result = await settleBets();
     if (result.settled > 0) {
       broadcast("settled", { settled: result.settled, time: new Date().toISOString() });
     }
@@ -1030,8 +1049,8 @@ function startEngine() {
 
   // ── Initial load ──
   dailyRefresh().then(() => {
-    refreshPreMatchOdds().then(() => {
-      settleBets();
+    refreshPreMatchOdds().then(async () => {
+      await settleBets();
       console.log("[ENGINE] Initial load complete\n");
     });
   });
