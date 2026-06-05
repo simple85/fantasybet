@@ -1808,14 +1808,20 @@
       if (betSlip.length === 0) return;
       const stake = parseFloat(document.getElementById("stakeInput").value) || 0;
       const btn = document.getElementById("placeBetBtn");
+      const credits = currentUser?.credits || 0;
+      const totalCost = betSlipMode === "system" ? stake * betSlip.length : stake;
       const validStake = stake >= MIN_BET;
-      btn.disabled = !validStake;
-      btn.style.opacity = validStake ? "1" : "0.4";
+      const canAfford = totalCost <= credits;
+      btn.disabled = !validStake || !canAfford;
+      btn.style.opacity = (validStake && canAfford) ? "1" : "0.4";
+
+      if (validStake && !canAfford) {
+        showStackToast(t("insufficientCredits"), "error");
+      }
 
       if (betSlipMode === "system") {
         // System: each selection is independent, stake per bet
         const count = betSlip.length;
-        const totalCost = stake * count;
         // Max possible win = sum of each individual bet's win
         const maxWin = betSlip.reduce((sum, s) => sum + stake * s.odd, 0);
         document.getElementById("totalOddsLabel").textContent = t("perBetStake");
