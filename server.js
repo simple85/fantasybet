@@ -263,6 +263,25 @@ app.post("/api/bets", (req, res) => {
   const user = users.find(u => u.id === userId);
   if (!user) return res.status(404).json({ success: false, error: "User not found" });
 
+  // Reject bets on finished matches or suspended/stale odds
+  for (const sel of selections) {
+    const match = matches.find(m => m.id === sel.matchId);
+    if (match && (FINISHED_SHORT.has(match.statusShort) || SETTLED_STATUSES_BET.has(match.status))) {
+      return res.status(400).json({ success: false, error: "Match already finished: " + (match.home?.name || sel.matchId) + " vs " + (match.away?.name || "") });
+    }
+    // Check if this selection's odds are suspended (stale failsafe or API suspended)
+    if (match && LIVE_SHORT.has(match.statusShort)) {
+      const liveItem = currentLiveOdds.find(o => o.fixtureId === sel.matchId);
+      if (liveItem) {
+        const liveBet = (liveItem.odds || []).find(b => b.id === sel.betId);
+        const liveVal = liveBet && (liveBet.values || []).find(v => v.value === sel.pick);
+        if (!liveVal || liveVal.suspended) {
+          return res.status(400).json({ success: false, error: "Odds suspended for this selection" });
+        }
+      }
+    }
+  }
+
   // System: total cost = stake × selections count. Combined: cost = stake.
   const betMode = mode || "combined";
   const totalCost = betMode === "system" ? parseFloat(stake) * selections.length : parseFloat(stake);

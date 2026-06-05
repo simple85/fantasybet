@@ -509,6 +509,7 @@
 
     // ── Handle live odds from SSE (every 5s) ──
     function handleLiveOdds(oddsArr) {
+      let cardRebuilt = false;
       oddsArr.forEach(item => {
         const prev = liveOddsMap[item.fixtureId];
         liveOddsMap[item.fixtureId] = item;
@@ -526,6 +527,7 @@
             tmp.innerHTML = renderMatchCard(match, showLeagueBadge);
             const newCard = tmp.firstElementChild;
             card.replaceWith(newCard);
+            cardRebuilt = true;
           }
         } else {
           // Same markets — in-place DOM update with animations
@@ -544,6 +546,8 @@
         // Check betslip for odds changes and suspended bets
         checkBetslipOddsChanges(item);
       });
+      // Re-sync selected highlights after any card rebuilds
+      if (cardRebuilt) syncOddButtons();
     }
 
     // ── Update visible odds values in the DOM without full re-render ──
@@ -630,6 +634,7 @@
 
       if (changed) {
         renderBetSlip();
+        syncOddButtons();
       }
     }
 
@@ -637,6 +642,7 @@
     function handleLiveScores(updates) {
       let anyChanged = false;
       let statusChanged = false;
+      let slipCleaned = false;
       updates.forEach(u => {
         const match = matches.find(m => m.id === u.id);
         if (!match) return;
@@ -649,6 +655,18 @@
         anyChanged = true;
 
         const newStatusClass = getStatusClass(u.status, match.date);
+
+        // If match finished → remove its selections from betslip
+        if (newStatusClass === "finished" && prevStatusClass !== "finished") {
+          for (let i = betSlip.length - 1; i >= 0; i--) {
+            if (betSlip[i].matchId === u.id) {
+              const label = betSlip[i].matchLabel + " — " + translateSelection(betSlip[i]);
+              showStackToast(label + " " + t("betRemoved"), "error");
+              betSlip.splice(i, 1);
+              slipCleaned = true;
+            }
+          }
+        }
 
         // If match changed category (went live or finished) → need full view re-render
         if (prevStatusClass !== newStatusClass) {
@@ -674,6 +692,12 @@
           }
         }
       });
+
+      // If betslip was cleaned, refresh it
+      if (slipCleaned) {
+        renderBetSlip();
+        syncOddButtons();
+      }
 
       // If any match changed status category, re-render the full view so it moves tabs
       if (statusChanged) {
@@ -733,6 +757,7 @@
       if (betSlip[index]) {
         betSlip[index].odd = newOdd;
         renderBetSlip();
+        syncOddButtons();
       }
       closeOddsChangeModal();
     }
