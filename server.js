@@ -1,5 +1,5 @@
 // ============================================
-// BETZONE SERVER — Real-Time Architecture
+// FANTASYBET SERVER — Real-Time Architecture
 // ============================================
 // SSE-powered live odds & scores. No frontend polling.
 //
@@ -1291,7 +1291,7 @@ function startEngine() {
 // ══════════════════════════════════════════
 app.listen(PORT, () => {
   console.log("=".repeat(50));
-  console.log(`BetZone server running at http://localhost:${PORT}`);
+  console.log(`FantasyBet server running at http://localhost:${PORT}`);
   console.log("=".repeat(50));
 
   if (!isApiKeyConfigured()) {

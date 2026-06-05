@@ -1,5 +1,5 @@
 // ============================================
-// BETZONE CONFIG
+// FANTASYBET CONFIG
 // ============================================
 // Users are now managed server-side via /api/users
 // Admin panel handles user CRUD at admin.html
@@ -11,7 +11,7 @@
 const DEFAULT_LANG = "tr";
 
 // Site adi / Site name
-const SITE_NAME = "BetZone";
+const SITE_NAME = "FantasyBet";
 
 // Minimum bahis miktari / Minimum bet amount
 const MIN_BET = 5;

@@ -1,7 +1,7 @@
 {
-  "name": "betzone",
+  "name": "fantasybet",
   "version": "1.0.0",
-  "description": "BetZone - Fantasy Football Betting",
+  "description": "FantasyBet - Fantasy Football Betting",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
