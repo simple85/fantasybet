@@ -530,6 +530,15 @@
         } else {
           // Same markets — in-place DOM update with animations
           updateOddsInDOM(item.fixtureId, item.odds, prev?.odds || []);
+          // If expanded panel was loaded, mark stale so next open rebuilds
+          const expEl = document.getElementById("expanded-" + item.fixtureId);
+          if (expEl && expEl.dataset.loaded && expEl.classList.contains("show")) {
+            // Panel is open — update odds in-place (already handled above via data-odd-key)
+          } else if (expEl && expEl.dataset.loaded) {
+            // Panel is closed — clear so next open gets fresh data
+            delete expEl.dataset.loaded;
+            expEl.innerHTML = "";
+          }
         }
 
         // Check betslip for odds changes and suspended bets
@@ -1026,10 +1035,8 @@
 
       // Restore expanded states and active tabs after re-render
       expandedIds.forEach(mid => {
-        const el = document.getElementById("expanded-" + mid);
-        const btn = el?.previousElementSibling;
-        if (el) el.classList.add("show");
-        if (btn) btn.classList.add("open");
+        // Trigger lazy-load + expand for previously open matches
+        toggleExpand(mid);
       });
       for (const [mid, tabId] of Object.entries(activeTabs)) {
         const card = document.getElementById("card-" + mid);
@@ -1186,8 +1193,8 @@
         }
       }
 
-      // ── Expanded markets ──
-      const expandedHtml = buildExpandedMarkets(match, bets, mid, bettingDisabled, isLive);
+      // ── Expanded markets: only check if markets exist, don't build HTML yet (lazy) ──
+      const hasExpandedMarkets = bets.length > 0;
 
       const liveMinute = statusClass === "live" && match.elapsed ? match.elapsed + "'" : null;
       const statusText = statusClass === "starting" ? t("starting") : (liveMinute ? liveMinute : translateStatus(status));
@@ -1216,11 +1223,11 @@
           '</div>' +
         '</div>' +
         '<div class="match-primary-odds">' + primaryHtml + '</div>' +
-        (expandedHtml ? (
+        (hasExpandedMarkets ? (
           '<button class="match-expand-btn" onclick="toggleExpand(\'' + mid + '\')">' +
             '<span class="arrow">&#9660;</span> <span id="expandLabel-' + mid + '">' + tm("moreMarkets") + '</span>' +
           '</button>' +
-          '<div class="match-expanded" id="expanded-' + mid + '">' + expandedHtml + '</div>'
+          '<div class="match-expanded" id="expanded-' + mid + '"></div>'
         ) : '') +
       '</div>';
     }
@@ -1681,11 +1688,27 @@
     // ── EXPAND / TABS ──
     function toggleExpand(mid) {
       const el = document.getElementById("expanded-" + mid);
-      const btn = el?.previousElementSibling;
-      el?.classList.toggle("show");
+      if (!el) return;
+      const btn = el.previousElementSibling;
+
+      // Lazy-load: build expanded markets HTML on first open
+      if (!el.dataset.loaded) {
+        const match = matches.find(m => m.id == mid);
+        if (match) {
+          const statusClass = getStatusClass(match.status || "Not Started", match.date);
+          const isLive = statusClass === "live";
+          const bettingDisabled = statusClass === "finished";
+          const liveData = liveOddsMap[mid];
+          const bets = isLive ? (liveData && liveData.odds ? liveData.odds : []) : (match.bets || []);
+          el.innerHTML = buildExpandedMarkets(match, bets, mid, bettingDisabled, isLive);
+          el.dataset.loaded = "1";
+        }
+      }
+
+      el.classList.toggle("show");
       btn?.classList.toggle("open");
       const label = document.getElementById("expandLabel-" + mid);
-      if (label) label.textContent = el?.classList.contains("show") ? tm("lessMarkets") : tm("moreMarkets");
+      if (label) label.textContent = el.classList.contains("show") ? tm("lessMarkets") : tm("moreMarkets");
     }
 
     function switchMarketTab(mid, tabId) {
