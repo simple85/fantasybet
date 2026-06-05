@@ -21,7 +21,6 @@
 const express = require("express");
 const compression = require("compression");
 const path = require("path");
-const fs = require("fs");
 require("dotenv").config();
 
 const {
@@ -31,18 +30,14 @@ const {
   fetchPreMatchOdds,
   fetchFixtureStatistics,
   fetchFixtureEvents,
-  saveData,
-  loadExistingData,
   formatDate,
   sleep,
   isApiKeyConfigured,
 } = require("./fetch-data");
+const db = require("./db");
 
 const app = express();
 const PORT = process.env.PORT || 8000;
-const DATA_DIR = path.join(__dirname, "data");
-const USERS_FILE = path.join(DATA_DIR, "users.json");
-const BETS_FILE = path.join(DATA_DIR, "bets.json");
 
 // ══════════════════════════════════════════
 // IN-MEMORY STATE
@@ -80,26 +75,8 @@ function broadcast(event, data) {
 }
 
 // ══════════════════════════════════════════
-// INIT
+// INIT — DB-backed (tables created automatically)
 // ══════════════════════════════════════════
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-
-if (!fs.existsSync(USERS_FILE)) {
-  fs.writeFileSync(USERS_FILE, JSON.stringify([
-    { id: "ali", password: "ali123", displayName: "Ali Yilmaz", credits: 0 },
-    { id: "mehmet", password: "mehmet123", displayName: "Mehmet Demir", credits: 0 },
-    { id: "ayse", password: "ayse123", displayName: "Ayse Kaya", credits: 0 },
-    { id: "emre", password: "emre123", displayName: "Emre Celik", credits: 0 },
-    { id: "zeynep", password: "zeynep123", displayName: "Zeynep Arslan", credits: 0 },
-  ], null, 2));
-}
-
-// Load existing match data into memory
-matches = loadExistingData();
-if (matches.length > 0) {
-  lastMatchUpdate = new Date().toISOString();
-  console.log(`[INIT] Loaded ${matches.length} matches from disk`);
-}
 
 // ── Middleware ──
 app.use(compression({ filter: (req, res) => {
@@ -115,30 +92,8 @@ app.get("/logout", (req, res) => {
 });
 
 // ══════════════════════════════════════════
-// HELPERS: read/write users & bets
+// HELPERS (DB-backed — see db.js)
 // ══════════════════════════════════════════
-function readUsers() {
-  try { return JSON.parse(fs.readFileSync(USERS_FILE, "utf-8")); }
-  catch (e) { return []; }
-}
-function writeUsers(users) {
-  fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2));
-}
-function readBets() {
-  try {
-    if (fs.existsSync(BETS_FILE)) return JSON.parse(fs.readFileSync(BETS_FILE, "utf-8"));
-  } catch (e) {}
-  return [];
-}
-async function readBetsAsync() {
-  try {
-    const data = await fs.promises.readFile(BETS_FILE, "utf-8");
-    return JSON.parse(data);
-  } catch (e) { return []; }
-}
-function writeBets(bets) {
-  fs.writeFileSync(BETS_FILE, JSON.stringify(bets, null, 2));
-}
 
 // ══════════════════════════════════════════
 // SSE ENDPOINT
@@ -176,7 +131,7 @@ app.get("/api/live-stream", (req, res) => {
 // ══════════════════════════════════════════
 // AUTH ROUTES
 // ══════════════════════════════════════════
-app.post("/api/auth/login", (req, res) => {
+app.post("/api/auth/login", async (req, res) => {
   const { id, password } = req.body;
   if (!id || !password) return res.json({ success: false, error: "Missing fields" });
 
@@ -186,83 +141,85 @@ app.post("/api/auth/login", (req, res) => {
     return res.json({ success: true, user: { id: adminId, displayName: "Admin", credits: 0, isAdmin: true } });
   }
 
-  const users = readUsers();
-  const user = users.find(u => u.id.toLowerCase() === id.toLowerCase() && u.password === password);
-  if (user) {
-    res.json({ success: true, user: { id: user.id, displayName: user.displayName, credits: user.credits } });
-  } else {
-    res.json({ success: false, error: "Invalid credentials" });
+  try {
+    const user = await db.getUserById(id.toLowerCase());
+    if (user && user.password === password) {
+      res.json({ success: true, user: { id: user.id, displayName: user.displayName, credits: user.credits } });
+    } else {
+      res.json({ success: false, error: "Invalid credentials" });
+    }
+  } catch (e) {
+    res.status(500).json({ success: false, error: "Database error" });
   }
 });
 
 // ══════════════════════════════════════════
 // USER ROUTES
 // ══════════════════════════════════════════
-app.get("/api/users", (req, res) => {
-  const users = readUsers();
-  res.json(users.map(u => ({ id: u.id, displayName: u.displayName, credits: u.credits })));
+app.get("/api/users", async (req, res) => {
+  try {
+    const users = await db.getUsers();
+    res.json(users.map(u => ({ id: u.id, displayName: u.displayName, credits: u.credits })));
+  } catch (e) { res.status(500).json({ error: "Database error" }); }
 });
 
-app.post("/api/users", (req, res) => {
+app.post("/api/users", async (req, res) => {
   const { id, password, displayName } = req.body;
   if (!id || !password || !displayName) {
     return res.status(400).json({ success: false, error: "Missing fields" });
   }
-  const users = readUsers();
-  if (users.find(u => u.id.toLowerCase() === id.toLowerCase())) {
-    return res.status(409).json({ success: false, error: "User already exists" });
-  }
-  const newUser = { id: id.toLowerCase().trim(), password, displayName: displayName.trim(), credits: 0 };
-  users.push(newUser);
-  writeUsers(users);
-  res.json({ success: true, user: { id: newUser.id, displayName: newUser.displayName, credits: 0 } });
+  try {
+    const existing = await db.getUserById(id.toLowerCase().trim());
+    if (existing) return res.status(409).json({ success: false, error: "User already exists" });
+    await db.createUser(id.toLowerCase().trim(), password, displayName.trim());
+    res.json({ success: true, user: { id: id.toLowerCase().trim(), displayName: displayName.trim(), credits: 0 } });
+  } catch (e) { res.status(500).json({ success: false, error: "Database error" }); }
 });
 
-app.delete("/api/users/:id", (req, res) => {
-  const users = readUsers();
-  const idx = users.findIndex(u => u.id === req.params.id);
-  if (idx === -1) return res.status(404).json({ success: false, error: "User not found" });
-  users.splice(idx, 1);
-  writeUsers(users);
-  res.json({ success: true });
+app.delete("/api/users/:id", async (req, res) => {
+  try {
+    const deleted = await db.deleteUser(req.params.id);
+    if (!deleted) return res.status(404).json({ success: false, error: "User not found" });
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ success: false, error: "Database error" }); }
 });
 
-app.post("/api/users/:id/credits", (req, res) => {
+app.post("/api/users/:id/credits", async (req, res) => {
   const { action, amount } = req.body;
-  const users = readUsers();
-  const user = users.find(u => u.id === req.params.id);
-  if (!user) return res.status(404).json({ success: false, error: "User not found" });
+  try {
+    const user = await db.getUserById(req.params.id);
+    if (!user) return res.status(404).json({ success: false, error: "User not found" });
 
-  const amt = parseFloat(amount) || 0;
-  if (amt < 0) return res.status(400).json({ success: false, error: "Amount must be positive" });
+    const amt = parseFloat(amount) || 0;
+    if (amt < 0) return res.status(400).json({ success: false, error: "Amount must be positive" });
 
-  if (action === "add") user.credits += amt;
-  else if (action === "subtract") user.credits = Math.max(0, user.credits - amt);
-  else if (action === "set") user.credits = Math.max(0, amt);
-  else return res.status(400).json({ success: false, error: "Invalid action (add|subtract|set)" });
+    let newCredits;
+    if (action === "add") newCredits = user.credits + amt;
+    else if (action === "subtract") newCredits = Math.max(0, user.credits - amt);
+    else if (action === "set") newCredits = Math.max(0, amt);
+    else return res.status(400).json({ success: false, error: "Invalid action (add|subtract|set)" });
 
-  writeUsers(users);
-  res.json({ success: true, credits: user.credits });
+    await db.updateUserCredits(req.params.id, newCredits);
+    res.json({ success: true, credits: newCredits });
+  } catch (e) { res.status(500).json({ success: false, error: "Database error" }); }
 });
 
-app.get("/api/users/:id", (req, res) => {
-  const users = readUsers();
-  const user = users.find(u => u.id === req.params.id);
-  if (!user) return res.status(404).json({ success: false });
-  res.json({ id: user.id, displayName: user.displayName, credits: user.credits });
+app.get("/api/users/:id", async (req, res) => {
+  try {
+    const user = await db.getUserById(req.params.id);
+    if (!user) return res.status(404).json({ success: false });
+    res.json({ id: user.id, displayName: user.displayName, credits: user.credits });
+  } catch (e) { res.status(500).json({ success: false }); }
 });
 
 // ══════════════════════════════════════════
 // BET ROUTES
 // ══════════════════════════════════════════
-app.post("/api/bets", (req, res) => {
+app.post("/api/bets", async (req, res) => {
   const { userId, selections, stake, totalOdds, possibleWin, mode } = req.body;
   if (!userId || !selections || !stake || (totalOdds == null && !mode)) {
     return res.status(400).json({ success: false, error: "Missing fields" });
   }
-  const users = readUsers();
-  const user = users.find(u => u.id === userId);
-  if (!user) return res.status(404).json({ success: false, error: "User not found" });
 
   // Reject bets on finished matches or suspended/stale odds
   for (const sel of selections) {
@@ -270,7 +227,6 @@ app.post("/api/bets", (req, res) => {
     if (match && (FINISHED_SHORT.has(match.statusShort) || SETTLED_STATUSES_BET.has(match.status))) {
       return res.status(400).json({ success: false, error: "Match already finished: " + (match.home?.name || sel.matchId) + " vs " + (match.away?.name || "") });
     }
-    // Check if this selection's odds are suspended (stale failsafe or API suspended)
     if (match && LIVE_SHORT.has(match.statusShort)) {
       const liveItem = currentLiveOdds.find(o => o.fixtureId === sel.matchId);
       if (liveItem) {
@@ -283,35 +239,35 @@ app.post("/api/bets", (req, res) => {
     }
   }
 
-  // System: total cost = stake × selections count. Combined: cost = stake.
   const betMode = mode || "combined";
   const totalCost = betMode === "system" ? parseFloat(stake) * selections.length : parseFloat(stake);
-  if (user.credits < totalCost) return res.status(400).json({ success: false, error: "Insufficient credits" });
-
-  user.credits -= totalCost;
-  writeUsers(users);
 
   const bet = {
-    id: "BZ" + Date.now().toString(36).toUpperCase(),
+    id: "FB" + Date.now().toString(36).toUpperCase(),
     userId,
     timestamp: new Date().toISOString(),
     mode: betMode,
     selections,
-    stake: parseFloat(stake),       // per-bet stake for system, total stake for combined
+    stake: parseFloat(stake),
     totalOdds: parseFloat(totalOdds),
     possibleWin: parseFloat(possibleWin),
-    status: "pending",
-    settledAt: null,
   };
-  const bets = readBets();
-  bets.unshift(bet);
-  writeBets(bets);
-  res.json({ success: true, bet: { id: bet.id, status: bet.status }, credits: user.credits });
+
+  try {
+    const result = await db.placeBetTransaction(userId, totalCost, bet);
+    if (result.error) return res.status(400).json({ success: false, error: result.error });
+    res.json({ success: true, bet: { id: bet.id, status: "pending" }, credits: result.credits });
+  } catch (e) {
+    console.error("[BET] Error:", e.message);
+    res.status(500).json({ success: false, error: "Database error" });
+  }
 });
 
-app.get("/api/bets/:userId", (req, res) => {
-  const bets = readBets();
-  res.json(bets.filter(b => b.userId === req.params.userId));
+app.get("/api/bets/:userId", async (req, res) => {
+  try {
+    const bets = await db.getBetsByUser(req.params.userId);
+    res.json(bets);
+  } catch (e) { res.status(500).json([]); }
 });
 
 // ══════════════════════════════════════════
@@ -853,14 +809,12 @@ async function settleBets() {
   try { return await _settleBetsInner(); } finally { _settleBusy = false; }
 }
 async function _settleBetsInner() {
-  const bets = await readBetsAsync();
+  const bets = await db.getPendingBets();
   if (matches.length === 0 || bets.length === 0) return { settled: 0 };
 
-  // Fetch missing stats only for finished matches that have pending bets
   // Fetch missing stats and events for finished matches with pending bets
   const finishedNeedData = new Set();
   for (const bet of bets) {
-    if (bet.status !== "pending") continue;
     for (const sel of bet.selections) {
       const match = matches.find(m => m.id === sel.matchId);
       if (match && SETTLED_STATUSES_BET.has(match.status) && (!match.stats || !match.events)) {
@@ -871,7 +825,6 @@ async function _settleBetsInner() {
   for (const mid of finishedNeedData) {
     const match = matches.find(m => m.id === mid);
     if (!match) continue;
-    // Fetch stats if missing
     if (!match.stats) {
       try {
         const stats = await fetchFixtureStatistics(mid);
@@ -881,7 +834,6 @@ async function _settleBetsInner() {
         }
       } catch (e) { console.error(`[SETTLE] Stats fetch failed for ${mid}: ${e.message}`); }
     }
-    // Fetch events if missing
     if (!match.events) {
       try {
         const events = await fetchFixtureEvents(mid);
@@ -894,11 +846,8 @@ async function _settleBetsInner() {
   }
 
   let settled = 0;
-  const users = readUsers();
 
   for (const bet of bets) {
-    if (bet.status !== "pending") continue;
-
     let allFinished = true;
     let anyLost = false;
     let anyVoid = false;
@@ -920,73 +869,54 @@ async function _settleBetsInner() {
       else if (result === "lost") anyLost = true;
     }
 
-    if (!allFinished) continue; // wait for all matches to finish
+    if (!allFinished) continue;
+
+    let status, payout = 0, finalOdds = bet.totalOdds, finalWin = bet.possibleWin;
 
     if (bet.mode === "system") {
-      // ── SYSTEM: each selection is independent ──
-      // Payout = sum of (stake × odd) for each won selection. Void = refund that stake.
       let totalPayout = 0;
       let wonCount = 0, lostCount = 0, voidCount = 0;
       for (const sel of bet.selections) {
         if (sel.result === "won") { totalPayout += bet.stake * sel.odd; wonCount++; }
-        else if (sel.result === "void") { totalPayout += bet.stake; voidCount++; } // refund
+        else if (sel.result === "void") { totalPayout += bet.stake; voidCount++; }
         else { lostCount++; }
       }
-      const totalPR = Math.round(totalPayout * 100) / 100;
-      if (wonCount === 0 && voidCount === 0) {
-        bet.status = "lost";
-      } else if (wonCount === 0 && voidCount > 0 && lostCount === 0) {
-        bet.status = "void";
-      } else {
-        bet.status = wonCount > 0 ? "won" : "void";
-      }
-      bet.possibleWin = totalPR;
-      bet.settledAt = new Date().toISOString();
-      const user = users.find(u => u.id === bet.userId);
-      if (user) user.credits += totalPR;
-      settled++;
+      payout = Math.round(totalPayout * 100) / 100;
+      finalWin = payout;
+      if (wonCount === 0 && voidCount === 0) status = "lost";
+      else if (wonCount === 0 && voidCount > 0 && lostCount === 0) status = "void";
+      else status = wonCount > 0 ? "won" : "void";
     } else {
-      // ── COMBINED: all selections must win ──
       if (anyLost) {
-        bet.status = "lost";
-        bet.settledAt = new Date().toISOString();
-        settled++;
+        status = "lost";
+        payout = 0;
       } else if (anyVoid) {
         const allVoid = bet.selections.every(s => s.result === "void");
         if (allVoid) {
-          bet.status = "void";
-          bet.settledAt = new Date().toISOString();
-          const user = users.find(u => u.id === bet.userId);
-          if (user) user.credits += bet.stake;
+          status = "void";
+          payout = bet.stake;
         } else {
-          // Partial void: multiply only won selections' odds, void = 1.00
-          const adjustedOdds = bet.selections.reduce((acc, s) => {
-            return acc * (s.result === "void" ? 1.0 : s.odd);
-          }, 1.0);
-          const payout = Math.round(bet.stake * adjustedOdds * 100) / 100;
-          bet.status = "won";
-          bet.totalOdds = Math.round(adjustedOdds * 100) / 100;
-          bet.possibleWin = payout;
-          bet.settledAt = new Date().toISOString();
-          const user = users.find(u => u.id === bet.userId);
-          if (user) user.credits += payout;
+          const adjustedOdds = bet.selections.reduce((acc, s) => acc * (s.result === "void" ? 1.0 : s.odd), 1.0);
+          payout = Math.round(bet.stake * adjustedOdds * 100) / 100;
+          status = "won";
+          finalOdds = Math.round(adjustedOdds * 100) / 100;
+          finalWin = payout;
         }
-        settled++;
       } else {
-        bet.status = "won";
-        bet.settledAt = new Date().toISOString();
-        const user = users.find(u => u.id === bet.userId);
-        if (user) user.credits += bet.possibleWin;
-        settled++;
+        status = "won";
+        payout = bet.possibleWin;
       }
+    }
+
+    try {
+      await db.settleBetTransaction(bet.id, status, finalWin, finalOdds, bet.selections, bet.userId, payout);
+      settled++;
+    } catch (e) {
+      console.error(`[SETTLE] Failed to settle bet ${bet.id}: ${e.message}`);
     }
   }
 
-  if (settled > 0) {
-    writeUsers(users);
-    writeBets(bets);
-    console.log(`[SETTLE] Settled ${settled} bet(s)`);
-  }
+  if (settled > 0) console.log(`[SETTLE] Settled ${settled} bet(s)`);
   return { settled };
 }
 
@@ -1112,7 +1042,7 @@ async function tickLiveFixtures() {
 
     if (updates.length > 0) {
       broadcast("liveScores", updates);
-      saveData(matches);
+      db.saveMatches(matches).catch(e => console.error("[DB] saveMatches error:", e.message));
       lastMatchUpdate = new Date().toISOString();
     }
 
@@ -1130,7 +1060,7 @@ async function tickLiveFixtures() {
           console.error(`[STATS] Failed for ${match.id}: ${e.message}`);
         }
       }
-      saveData(matches);
+      db.saveMatches(matches).catch(e => console.error("[DB] saveMatches error:", e.message));
       const result = await settleBets();
       if (result.settled > 0) {
         broadcast("settled", { settled: result.settled, time: new Date().toISOString() });
@@ -1178,7 +1108,7 @@ async function dailyRefresh() {
     }
 
     matches = newFixtures;
-    saveData(matches);
+    await db.replaceAllMatches(matches);
     lastMatchUpdate = new Date().toISOString();
     lastDailyRefresh = Date.now();
 
@@ -1219,7 +1149,7 @@ async function refreshPreMatchOdds() {
     }
 
     if (updated > 0) {
-      saveData(matches);
+      await db.saveMatches(matches);
       lastMatchUpdate = new Date().toISOString();
       broadcast("oddsUpdate", { updated, time: lastMatchUpdate });
     }
@@ -1289,10 +1219,24 @@ function startEngine() {
 // ══════════════════════════════════════════
 // START SERVER
 // ══════════════════════════════════════════
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log("=".repeat(50));
   console.log(`FantasyBet server running at http://localhost:${PORT}`);
   console.log("=".repeat(50));
+
+  // Initialize database (create tables + migrate JSON if needed)
+  try {
+    await db.initDB();
+    const dbMatches = await db.loadMatches();
+    if (dbMatches.length > 0) {
+      matches = dbMatches;
+      lastMatchUpdate = new Date().toISOString();
+      console.log(`[INIT] Loaded ${matches.length} matches from database`);
+    }
+  } catch (e) {
+    console.error("[DB] Init failed:", e.message);
+    console.error("Check DATABASE_URL environment variable");
+  }
 
   if (!isApiKeyConfigured()) {
     console.log("API key not configured. Edit .env and set API_FOOTBALL_KEY");

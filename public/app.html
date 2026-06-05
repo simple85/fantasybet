@@ -1745,6 +1745,7 @@
           const bets = isLive ? (liveData && liveData.odds ? liveData.odds : []) : (match.bets || []);
           el.innerHTML = buildExpandedMarkets(match, bets, mid, bettingDisabled, isLive);
           el.dataset.loaded = "1";
+          syncOddButtons();
         }
       }
 
