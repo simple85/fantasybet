@@ -129,6 +129,12 @@ function readBets() {
   } catch (e) {}
   return [];
 }
+async function readBetsAsync() {
+  try {
+    const data = await fs.promises.readFile(BETS_FILE, "utf-8");
+    return JSON.parse(data);
+  } catch (e) { return []; }
+}
 function writeBets(bets) {
   fs.writeFileSync(BETS_FILE, JSON.stringify(bets, null, 2));
 }
@@ -649,27 +655,36 @@ function evaluateSelection(sel, match) {
   return "void";
 }
 
+let _settleBusy = false;
 async function settleBets() {
-  const bets = readBets();
+  if (_settleBusy) return { settled: 0 };
+  _settleBusy = true;
+  try { return await _settleBetsInner(); } finally { _settleBusy = false; }
+}
+async function _settleBetsInner() {
+  const bets = await readBetsAsync();
   if (matches.length === 0 || bets.length === 0) return { settled: 0 };
 
-  // Fetch missing stats for finished matches that have pending bets
-  const pendingMatchIds = new Set();
+  // Fetch missing stats only for finished matches that have pending bets
+  const finishedNeedStats = new Set();
   for (const bet of bets) {
     if (bet.status !== "pending") continue;
-    for (const sel of bet.selections) pendingMatchIds.add(sel.matchId);
-  }
-  for (const mid of pendingMatchIds) {
-    const match = matches.find(m => m.id === mid);
-    if (match && SETTLED_STATUSES_BET.has(match.status) && !match.stats) {
-      try {
-        const stats = await fetchFixtureStatistics(mid);
-        if (stats && stats.home && stats.away) {
-          match.stats = stats;
-          console.log(`[SETTLE] Fetched missing stats for ${mid}`);
-        }
-      } catch (e) { console.error(`[SETTLE] Stats fetch failed for ${mid}: ${e.message}`); }
+    for (const sel of bet.selections) {
+      const match = matches.find(m => m.id === sel.matchId);
+      if (match && SETTLED_STATUSES_BET.has(match.status) && !match.stats) {
+        finishedNeedStats.add(sel.matchId);
+      }
     }
+  }
+  for (const mid of finishedNeedStats) {
+    try {
+      const stats = await fetchFixtureStatistics(mid);
+      if (stats && stats.home && stats.away) {
+        const match = matches.find(m => m.id === mid);
+        if (match) match.stats = stats;
+        console.log(`[SETTLE] Fetched missing stats for ${mid}`);
+      }
+    } catch (e) { console.error(`[SETTLE] Stats fetch failed for ${mid}: ${e.message}`); }
   }
 
   let settled = 0;
