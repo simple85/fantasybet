@@ -101,7 +101,10 @@ if (matches.length > 0) {
 }
 
 // ── Middleware ──
-app.use(compression());
+app.use(compression({ filter: (req, res) => {
+  if (req.path === "/api/live-stream") return false;
+  return compression.filter(req, res);
+}}));
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
 
