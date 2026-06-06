@@ -173,6 +173,10 @@ const BET_CATEGORIES = [
     betIds: [21, 22, 63, 52, 53],
     // Odd/Even, Odd/Even 1st/2nd Half, Home/Away Odd/Even
   },
-  // Players (34-40) removed — API returns aggregate values (Yes/No, Home/Away, counts)
-  // instead of player names, can't be properly displayed or settled
+  {
+    id: "players",
+    betIds: [36, 34, 35, 37, 38],
+    // Anytime/First/Last Scorer, Home/Away Scorers
+    // 39 (Assists), 40 (Fouls) removed — no per-player data from API
+  },
 ];

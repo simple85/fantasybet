@@ -1278,10 +1278,10 @@
 
       if (isLive) {
         // Live: auto-categorize by bet NAME (live API uses different IDs than pre-match)
-        const catMap = { result: [], goals: [], handicap: [], corners: [], cards: [], odd_even: [] };
+        const catMap = { result: [], goals: [], handicap: [], corners: [], cards: [], odd_even: [], players: [] };
         bets.forEach(bet => {
           const cat = categorizeLiveBet(bet.name);
-          if (!catMap[cat]) return; // skip unsettleable categories (players)
+          if (!catMap[cat]) return; // skip unsettleable categories (assists, fouls)
           // Skip card/corner bets with count-based values (0,1,2,more 5) — can't settle these
           if ((cat === "cards" || cat === "corners") && bet.values && bet.values.length > 0) {
             const hasOU = bet.values.some(v => /^(Over|Under)\b/i.test(v.value));
@@ -1290,7 +1290,7 @@
           }
           catMap[cat].push(bet);
         });
-        const LIVE_CAT_ORDER = ["result", "goals", "handicap", "corners", "cards", "odd_even"];
+        const LIVE_CAT_ORDER = ["result", "goals", "handicap", "corners", "cards", "odd_even", "players"];
         LIVE_CAT_ORDER.forEach(catId => {
           const catBets = catMap[catId];
           if (!catBets || catBets.length === 0) return;
@@ -1334,8 +1334,10 @@
     // Returns null for unsettleable bets (filtered out from live view)
     function categorizeLiveBet(name) {
       const n = name.toLowerCase();
-      // Player props — can't settle (no per-player stats from API)
-      if (n.includes("scorer") || n.includes("assist") || n.includes("foul") || n.includes("player")) return null;
+      // Assists/Fouls — no per-player data from API, can't settle
+      if (n.includes("assist") || n.includes("foul")) return null;
+      // Goal scorer bets → players tab (settleable via match events)
+      if (n.includes("scorer")) return "players";
       if (n.includes("corner")) return "corners";
       if (n.includes("card")) return "cards";
       if (n.includes("odd") || n.includes("even")) return "odd_even";
@@ -1621,7 +1623,10 @@
       const values = isLive ? sortLiveBetValues(bet.values, bet.name) : sortBetValues(bet.values, bet.id);
       const homeName = match.home.name;
       const awayName = match.away.name;
-      const isPlayerBet = !isLive && [34, 35, 36, 37, 38, 39, 40].includes(bet.id);
+      // Player bet: only use player-grid if values are actual player names (not Yes/No/Home/Away/numbers)
+      const GENERIC_VALUES = new Set(["yes", "no", "home", "away", "draw", "1", "2"]);
+      const isPlayerBet = !isLive && [34, 35, 36].includes(bet.id) &&
+        values.length > 2 && !values.every(v => GENERIC_VALUES.has(v.value.toLowerCase()) || /^\d+$/.test(v.value) || /^more \d+$/.test(v.value));
       const isScoreBet = !isLive && [10, 31].includes(bet.id);
       const disAttr = disabled ? ' disabled' : '';
       const disClass = disabled ? ' disabled' : '';
