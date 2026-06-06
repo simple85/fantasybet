@@ -1281,7 +1281,14 @@
         const catMap = { result: [], goals: [], handicap: [], corners: [], cards: [], odd_even: [] };
         bets.forEach(bet => {
           const cat = categorizeLiveBet(bet.name);
-          if (catMap[cat]) catMap[cat].push(bet);
+          if (!catMap[cat]) return; // skip unsettleable categories (players)
+          // Skip card/corner bets with count-based values (0,1,2,more 5) — can't settle these
+          if ((cat === "cards" || cat === "corners") && bet.values && bet.values.length > 0) {
+            const hasOU = bet.values.some(v => /^(Over|Under)\b/i.test(v.value));
+            const hasResult = bet.values.some(v => /^(Home|Away|Draw)\b/i.test(v.value));
+            if (!hasOU && !hasResult) return; // pure count values — skip
+          }
+          catMap[cat].push(bet);
         });
         const LIVE_CAT_ORDER = ["result", "goals", "handicap", "corners", "cards", "odd_even"];
         LIVE_CAT_ORDER.forEach(catId => {
@@ -1324,8 +1331,11 @@
     }
 
     // ── Auto-categorize live bet by name ──
+    // Returns null for unsettleable bets (filtered out from live view)
     function categorizeLiveBet(name) {
       const n = name.toLowerCase();
+      // Player props — can't settle (no per-player stats from API)
+      if (n.includes("scorer") || n.includes("assist") || n.includes("foul") || n.includes("player")) return null;
       if (n.includes("corner")) return "corners";
       if (n.includes("card")) return "cards";
       if (n.includes("odd") || n.includes("even")) return "odd_even";
@@ -1379,6 +1389,14 @@
         "Which team will score the 1st goal?": "1. Golü Kim Atar?",
         "Which team will score the 4th goal?": "4. Golü Kim Atar?",
         "Which team will score the 7th goal?": "7. Golü Kim Atar?",
+        "First Goal Scorer": "İlk Gol Atan Oyuncu",
+        "Last Goal Scorer": "Son Gol Atan Oyuncu",
+        "Anytime Goal Scorer": "Her Zaman Gol Atan Oyuncu",
+        "To Score 2 or More Goals": "2 veya Daha Fazla Gol Atan",
+        "Player Assists": "Oyuncu Asist",
+        "Player Fouls Committed": "Oyuncu Faulü",
+        "Away Team Goalscorers": "Deplasman Gol Atacak Oyuncular",
+        "Home Team Goalscorers": "İç Saha Gol Atacak Oyuncular",
       },
       de: {
         "1x2 (1st Half)": "1x2 (1. Halbzeit)",
@@ -1801,7 +1819,7 @@
     function syncOddButtons() {
       const selectedKeys = new Set();
       betSlip.forEach(s => selectedKeys.add(s.matchId + "-" + s.betId + "-" + s.pick));
-      document.querySelectorAll('.odd-btn').forEach(btn => {
+      document.querySelectorAll('.odd-btn, .player-odd-btn').forEach(btn => {
         const keyEl = btn.querySelector('[data-odd-key]');
         if (!keyEl) return;
         const key = keyEl.getAttribute('data-odd-key');
