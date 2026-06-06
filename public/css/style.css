@@ -1146,6 +1146,33 @@ input {
   padding: 1.5rem;
 }
 
+.bets-tab-toggle {
+  display: flex;
+  gap: 0;
+  margin-bottom: 1.2rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+.bets-tab {
+  flex: 1;
+  padding: 0.7rem 1rem;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.bets-tab.active {
+  background: var(--accent);
+  color: var(--bg-main);
+}
+
 .bets-page h2 {
   font-size: 1.2rem;
   margin-bottom: 1rem;

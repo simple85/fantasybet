@@ -290,10 +290,16 @@
       </div>
 
       <div class="bets-page" id="mybetsPage" style="display:none;">
-        <h2 id="activeBetsTitle">Active Bets</h2>
-        <div id="activeBetsList"></div>
-        <h2 id="settledBetsTitle" style="margin-top:2rem;">Settled Bets</h2>
-        <div id="settledBetsList"></div>
+        <div class="bets-tab-toggle">
+          <button class="bets-tab active" id="tabActive" onclick="switchBetsTab('active')">Active Bets</button>
+          <button class="bets-tab" id="tabSettled" onclick="switchBetsTab('settled')">Settled Bets</button>
+        </div>
+        <div id="activeBetsSection">
+          <div id="activeBetsList"></div>
+        </div>
+        <div id="settledBetsSection" style="display:none;">
+          <div id="settledBetsList"></div>
+        </div>
       </div>
 
       <aside class="betslip-sidebar" id="betslipSidebar">
@@ -792,8 +798,16 @@
       document.getElementById("possibleWinLabel").textContent = t("possibleWin");
       document.getElementById("placeBetBtn").textContent = t("placeBet").toUpperCase();
       document.getElementById("acceptOddsLabel").textContent = t("acceptOddsChanges");
-      document.getElementById("activeBetsTitle").textContent = t("activeBets");
-      document.getElementById("settledBetsTitle").textContent = t("settledBets");
+      document.getElementById("tabActive").textContent = t("activeBets");
+      document.getElementById("tabSettled").textContent = t("settledBets");
+    }
+
+    // ── BETS TAB TOGGLE ──
+    function switchBetsTab(tab) {
+      document.getElementById("activeBetsSection").style.display = tab === "active" ? "block" : "none";
+      document.getElementById("settledBetsSection").style.display = tab === "settled" ? "block" : "none";
+      document.getElementById("tabActive").classList.toggle("active", tab === "active");
+      document.getElementById("tabSettled").classList.toggle("active", tab === "settled");
     }
 
     // ── PAGES ──
