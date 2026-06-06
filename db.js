@@ -102,25 +102,31 @@ async function migrateFromJSON(client) {
   try {
     if (fs.existsSync(BETS_FILE)) {
       const bets = JSON.parse(fs.readFileSync(BETS_FILE, "utf-8"));
+      let migrated = 0, skipped = 0;
       for (const b of bets) {
-        await client.query(
-          `INSERT INTO bets (id, user_id, selections, stake, mode, total_odds, possible_win, status, settled_at, created_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) ON CONFLICT (id) DO NOTHING`,
-          [
-            b.id,
-            b.userId,
-            JSON.stringify(b.selections),
-            b.stake,
-            b.mode || "combined",
-            b.totalOdds || null,
-            b.possibleWin || null,
-            b.status || "pending",
-            b.settledAt || null,
-            b.timestamp || new Date().toISOString(),
+        try {
+          await client.query(
+            `INSERT INTO bets (id, user_id, selections, stake, mode, total_odds, possible_win, status, settled_at, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) ON CONFLICT (id) DO NOTHING`,
+            [
+              b.id,
+              b.userId,
+              JSON.stringify(b.selections),
+              b.stake,
+              b.mode || "combined",
+              b.totalOdds || null,
+              b.possibleWin || null,
+              b.status || "pending",
+              b.settledAt || null,
+              b.timestamp || new Date().toISOString(),
           ]
-        );
+          );
+          migrated++;
+        } catch (e) {
+          skipped++;
+        }
       }
-      console.log(`[DB] Migrated ${bets.length} bets`);
+      console.log(`[DB] Migrated ${migrated} bets (skipped ${skipped} with missing users)`);
     }
   } catch (e) {
     console.error("[DB] Bet migration error:", e.message);

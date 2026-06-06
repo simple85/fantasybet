@@ -329,18 +329,35 @@ function evaluateSelection(sel, match) {
   const pick = sel.pick;
   const betId = sel.betId;
 
-  // Halftime score (may be null for older data)
-  const ht = match.htScore || null;
+  // Halftime score — try match data first, fall back to deriving from events
+  let ht = match.htScore || null;
+  if (!ht && match.events && match.events.goals) {
+    // Derive HT score from goal events (goals scored at minute <= 45)
+    let htDerH = 0, htDerA = 0;
+    for (const g of match.events.goals) {
+      if (g.minute <= 45) {
+        if (g.teamId === match.home?.id) htDerH++; else htDerA++;
+      }
+    }
+    ht = { home: htDerH, away: htDerA };
+  }
   const htH = ht ? ht.home : null;
   const htA = ht ? ht.away : null;
-  const htTotal = ht ? htH + htA : null;
+  const htTotal = ht !== null && htH !== null ? htH + htA : null;
   // Second half derived from FT - HT
-  const h2H = ht ? h - htH : null;
-  const h2A = ht ? a - htA : null;
-  const h2Total = ht ? (h2H + h2A) : null;
+  const h2H = htH !== null ? h - htH : null;
+  const h2A = htA !== null ? a - htA : null;
+  const h2Total = h2H !== null ? (h2H + h2A) : null;
 
   // ── Helper: evaluate Over/Under pick ──
   function evalOU(goalCount, pickStr) {
+    // Handle "No Goal" pick (= 0 goals)
+    if (/^no goal$/i.test(pickStr)) return goalCount === 0 ? "won" : "lost";
+    // Handle exact number picks like "1", "2", "3+"
+    const exact = parseInt(pickStr);
+    if (/^\d+$/.test(pickStr) && !isNaN(exact)) return goalCount === exact ? "won" : "lost";
+    if (/^\d+\+$/.test(pickStr)) { const min = parseInt(pickStr); return goalCount >= min ? "won" : "lost"; }
+    // Standard Over/Under
     const m = pickStr.match(/^(Over|Under)\s+([\d.]+)$/);
     if (!m) return null;
     const line = parseFloat(m[2]);
@@ -543,25 +560,27 @@ function evaluateByName(name, pick, h, a, total, ht, htH, htA, htTotal, h2H, h2A
   // Goal Scorer / Anytime Goal Scorer
   if (/\bgoal scorer\b/i.test(name)) {
     if (!ev) return null;
-    // Pick is a player name — fuzzy match against goal events
+    // Pick is a player name — fuzzy match against goal events (exclude own goals)
     const pickLower = pick.toLowerCase().trim();
-    const scored = goals.some(g => {
+    const regularGoals = goals.filter(g => g.detail !== "Own Goal");
+    const scored = regularGoals.some(g => {
       const pName = (g.player || "").toLowerCase();
       return pName === pickLower || pName.includes(pickLower) || pickLower.includes(pName);
     });
-    if (/\bno goal/i.test(pick)) return goals.length === 0 ? "won" : "lost";
+    if (/\bno goal/i.test(pick)) return regularGoals.length === 0 ? "won" : "lost";
     return scored ? "won" : "lost";
   }
 
   // "To Qualify" — void (tournament context, can't determine from single match)
   if (/\bto qualify\b/i.test(name)) return "void";
 
-  // "To Score 2 or More" — player scored 2+ goals
+  // "To Score 2 or More" — player scored 2+ goals (exclude own goals)
   if (/\bto score \d+ or more\b/i.test(name)) {
     if (!ev) return null;
     const pickLower = pick.toLowerCase().trim();
     if (/\bno\b/i.test(pick) || /\bnone\b/i.test(pick)) return "void";
     const playerGoals = goals.filter(g => {
+      if (g.detail === "Own Goal") return false;
       const pName = (g.player || "").toLowerCase();
       return pName === pickLower || pName.includes(pickLower) || pickLower.includes(pName);
     }).length;
@@ -862,8 +881,18 @@ async function _settleBetsInner() {
       if (VOID_STATUSES_BET.has(match.status)) { anyVoid = true; sel.result = "void"; continue; }
       if (!SETTLED_STATUSES_BET.has(match.status)) { allFinished = false; continue; }
 
-      const result = evaluateSelection(sel, match);
-      if (result === null) { allFinished = false; continue; }
+      let result = evaluateSelection(sel, match);
+      if (result === null) {
+        // Safety net: if match finished >6 hours ago and still can't evaluate, void it
+        const matchDate = new Date(match.date || 0).getTime();
+        const sixHoursAgo = Date.now() - 6 * 60 * 60 * 1000;
+        if (matchDate < sixHoursAgo && SETTLED_STATUSES_BET.has(match.status)) {
+          console.log(`[SETTLE] Force-voiding unevaluable selection: bet=${bet.id} match=${match.id} market="${sel.marketLabel || sel.betId}"`);
+          result = "void";
+        } else {
+          allFinished = false; continue;
+        }
+      }
       sel.result = result;
       if (result === "void") anyVoid = true;
       else if (result === "lost") anyLost = true;

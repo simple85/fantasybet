@@ -2082,10 +2082,18 @@
             else if (s.result === "lost") resultIcon = '<span style="color:var(--red);margin-left:0.3rem;">✗</span>';
             else if (s.result === "void") resultIcon = '<span style="color:var(--text-muted);margin-left:0.3rem;">—</span>';
 
+            // System bets: show per-selection gain/loss
+            let selGain = '';
+            if (isSystem && s.result === "won") {
+              selGain = '<span style="color:var(--accent);font-weight:700;margin-left:0.5rem;">+ ' + (bet.stake * s.odd).toFixed(2) + ' €</span>';
+            } else if (isSystem && s.result === "void") {
+              selGain = '<span style="color:var(--text-muted);margin-left:0.5rem;">↩ ' + bet.stake.toFixed(2) + ' €</span>';
+            }
+
             return '<div class="bet-card-selection">' +
               '<div><span class="match">' + s.matchLabel + '</span>' + scoreHtml + statusBadge + timeInfo + '</div>' +
               '<div style="margin-top:0.2rem;"><strong>' + translateSelection(s) + '</strong>' + resultIcon +
-              '<span style="color:var(--accent);font-family:var(--font-mono);margin-left:0.5rem;">' + s.odd.toFixed(2) + '</span></div>' +
+              '<span style="color:var(--accent);font-family:var(--font-mono);margin-left:0.5rem;">' + s.odd.toFixed(2) + '</span>' + selGain + '</div>' +
             '</div>';
           }).join("") +
           '<div class="bet-card-footer">' +
@@ -2096,10 +2104,12 @@
                 '<span>' + t("totalOdds") + '<br><strong>' + (bet.totalOdds || 0).toFixed(2) + '</strong></span>'
             ) +
             (bet.status === "won"
-              ? '<span style="color:var(--accent);font-weight:700;">' + t("possibleWin") + '<br>+ ' + bet.possibleWin.toFixed(2) + ' €</span>'
-              : bet.status === "void"
-                ? '<span style="color:var(--text-muted);">' + t("stake") + '<br>↩ ' + (isSystem ? (bet.stake * bet.selections.length) : bet.stake).toFixed(2) + ' €</span>'
-                : '<span>' + t("possibleWin") + '<br><strong style="color:var(--yellow)">' + bet.possibleWin.toFixed(2) + ' €</strong></span>') +
+              ? '<span style="color:var(--accent);font-weight:700;">' + t("winnings") + '<br>+ ' + bet.possibleWin.toFixed(2) + ' €</span>'
+              : bet.status === "lost"
+                ? '<span style="color:var(--red);font-weight:700;">' + t("winnings") + '<br>0.00 €</span>'
+                : bet.status === "void"
+                  ? '<span style="color:var(--text-muted);">' + t("stake") + '<br>↩ ' + (isSystem ? (bet.stake * bet.selections.length) : bet.stake).toFixed(2) + ' €</span>'
+                  : '<span>' + t("possibleWin") + '<br><strong style="color:var(--yellow)">' + bet.possibleWin.toFixed(2) + ' €</strong></span>') +
           '</div>' +
         '</div>';
       };
