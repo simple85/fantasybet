@@ -1972,6 +1972,9 @@
             showToast(t("betPlaced") + " (" + t("system") + ")", "success");
           } else {
             showToast(translateServerError(data.error), "error");
+            if (data.error && (data.error.includes("suspended") || data.error.includes("finished"))) {
+              removeBadSelections();
+            }
           }
         } catch (e) {
           showToast("Connection error", "error");
@@ -2002,10 +2005,36 @@
             showToast(t("betPlaced"), "success");
           } else {
             showToast(translateServerError(data.error), "error");
+            if (data.error && (data.error.includes("suspended") || data.error.includes("finished"))) {
+              removeBadSelections();
+            }
           }
         } catch (e) {
           showToast("Connection error", "error");
         }
+      }
+    }
+
+    // Remove suspended/finished selections from betslip after server rejection
+    function removeBadSelections() {
+      const before = betSlip.length;
+      betSlip = betSlip.filter(s => {
+        const match = matches.find(m => m.id === s.matchId);
+        if (!match) return false;
+        const sc = getStatusClass(match.status || "Not Started", match.date);
+        if (sc === "finished") return false;
+        // Check live odds for suspension
+        const liveItem = liveOddsMap[s.matchId];
+        if (liveItem && liveItem.odds) {
+          const liveBet = liveItem.odds.find(b => b.id === s.betId);
+          const liveVal = liveBet && (liveBet.values || []).find(v => v.value === s.pick);
+          if (!liveVal || liveVal.suspended) return false;
+        }
+        return true;
+      });
+      if (betSlip.length < before) {
+        renderBetSlip();
+        syncOddButtons();
       }
     }
 
