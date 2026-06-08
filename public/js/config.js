@@ -176,5 +176,4 @@ const BET_CATEGORIES = [
   },
   // Players (34-40) removed — Bet365 returns Yes/No, team names, or counts
   // instead of actual player names. Redundant with existing BTS/Result bets.
-  },
 ];
