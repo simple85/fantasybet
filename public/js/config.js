@@ -144,9 +144,10 @@ const BET_CATEGORIES = [
   },
   {
     id: "goals",
-    betIds: [5, 6, 72, 17, 18, 16, 8, 25, 26, 29],
+    betIds: [5, 6, 72, 17, 18, 8, 25, 26, 29],
     // Goals O/U, Goals O/U 1st/2nd Half,
-    // Total Home/Away Goals, Exact Goals, BTS, BTS 1st/2nd, Result/Total 1st Half
+    // Total Home/Away Goals, BTS, BTS 1st/2nd, Result/Total 1st Half
+    // ID 16 (Exact Goal Number) removed — Bet365 returns duplicate O/U with different odds, confusing
   },
   {
     id: "score",
@@ -173,10 +174,7 @@ const BET_CATEGORIES = [
     betIds: [21, 22, 63, 52, 53],
     // Odd/Even, Odd/Even 1st/2nd Half, Home/Away Odd/Even
   },
-  {
-    id: "players",
-    betIds: [36, 34, 35, 37, 38],
-    // Anytime/First/Last Scorer, Home/Away Scorers
-    // 39 (Assists), 40 (Fouls) removed — no per-player data from API
+  // Players (34-40) removed — Bet365 returns Yes/No, team names, or counts
+  // instead of actual player names. Redundant with existing BTS/Result bets.
   },
 ];

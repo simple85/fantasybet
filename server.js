@@ -883,10 +883,11 @@ async function _settleBetsInner() {
 
       let result = evaluateSelection(sel, match);
       if (result === null) {
-        // Safety net: if match finished >6 hours ago and still can't evaluate, void it
+        // Safety net: if match finished >30 min ago AND we already have events+stats, void it
         const matchDate = new Date(match.date || 0).getTime();
-        const sixHoursAgo = Date.now() - 6 * 60 * 60 * 1000;
-        if (matchDate < sixHoursAgo && SETTLED_STATUSES_BET.has(match.status)) {
+        const cutoff = Date.now() - 30 * 60 * 1000;
+        const hasData = match.events && match.stats;
+        if (matchDate < cutoff && hasData && SETTLED_STATUSES_BET.has(match.status)) {
           console.log(`[SETTLE] Force-voiding unevaluable selection: bet=${bet.id} match=${match.id} market="${sel.marketLabel || sel.betId}"`);
           result = "void";
         } else {
