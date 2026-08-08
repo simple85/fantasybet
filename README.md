@@ -1,133 +1,132 @@
-# BetZone - Fantasy Betting Website
+# FantasyBet
 
-Portföy projesi olarak geliştirilmiş fantezi bahis sitesi.
-Fantasy betting website developed as a portfolio project.
+Fantasy football betting website built as a portfolio project. Users place bets on real football matches using virtual credits. Odds are pulled from the API-Football (Bet365) feed, and bets are settled automatically based on match results.
 
-## 🚀 Kurulum / Setup
+## Setup
 
 ```bash
-# 1. Bağımlılıkları yükle / Install dependencies
-cd betsite
 npm install
 
-# 2. API anahtarını ayarla / Set your API key
+# Copy the env template and add your API key
 cp .env.example .env
-# .env dosyasını düzenle ve API_FOOTBALL_KEY değerini gir
-# Edit .env and enter your API_FOOTBALL_KEY
 
-# 3. Sunucuyu başlat / Start the server
+# Start the server
 npm start
 ```
 
-Tarayıcıda `http://localhost:8000` adresine gidin.
+Open `http://localhost:8000` in your browser.
 
-> **API anahtarı olmadan da çalışır!** Mock veri ile başlar, API bağlanınca gerçek veriye geçer.
-> **Works without an API key!** Starts with mock data, switches to real data once API is connected.
+The site works without an API key — it starts with mock data and switches to live data once the key is configured.
 
-## 🔑 API Anahtarı / API Key
+## API Key
 
-1. https://dashboard.api-football.com/ adresinden ücretsiz hesap oluştur
-2. API anahtarını kopyala
-3. `.env` dosyasına yapıştır:
+1. Create a free account at https://dashboard.api-football.com/
+2. Copy your API key
+3. Paste it into `.env`:
    ```
-   API_FOOTBALL_KEY=buraya_anahtarini_yaz
+   API_FOOTBALL_KEY=your_key_here
    ```
 
-**⚠️ `.env` dosyası `.gitignore` ile korunmaktadır — asla Git'e pushlanmaz.**
+The `.env` file is protected by `.gitignore` and will never be pushed to the repository.
 
-## ⏰ Veri Güncelleme Takvimi / Fetch Schedule
+## Data Refresh Schedule
 
-| Zaman | İşlem | Günlük API Çağrısı (tahmini) |
-|-------|-------|------------------------------|
-| 00:00, 12:00 | Fikstür + Oran (tam yenileme) | ~12 |
-| 04:00, 08:00, 16:00, 20:00 | Sadece oran güncellemesi | ~30 |
-| Her saat (:30) | Biten maç skorları | ~10 |
-| **Toplam** | | **~50/gün** |
+| Time | Action | Est. Daily API Calls |
+|------|--------|----------------------|
+| 00:00, 12:00 | Full fixture + odds refresh | ~12 |
+| 04:00, 08:00, 16:00, 20:00 | Odds update only | ~30 |
+| Every hour (:30) | Finished match scores | ~10 |
+| **Total** | | **~50/day** |
 
-Ücretsiz plan limiti: 100 istek/gün — rahatça yeterli.
+The free plan allows 100 requests/day, which is more than enough.
 
-## 👥 Kullanıcılar / Users
+## Demo Users
 
-`public/js/config.js` dosyasında tanımlıdır:
+Users are stored in PostgreSQL and managed through the admin panel. Below are the default demo accounts:
 
-| Kullanıcı | Şifre | İsim |
-|-----------|-------|------|
-| ali | ali123 | Ali Yılmaz |
-| mehmet | mehmet123 | Mehmet Demir |
-| ayse | ayse123 | Ayşe Kaya |
-| emre | emre123 | Emre Çelik |
-| zeynep | zeynep123 | Zeynep Arslan |
+| Username | Password | Display Name |
+|----------|----------|--------------|
+| ali | ali123 | Ali Yilmaz |
+| max | max123 | Max Richter |
+| james | james123 | James Cole |
+| emre | emre123 | Emre Celik |
+| lena | lena123 | Lena Weber |
 
-Yeni kullanıcı eklemek için `USERS` dizisine giriş ekleyin.
+New users can be added via the admin panel at `/admin.html`.
 
-## 🔑 Admin Paneli
+## Admin Panel
 
 - URL: `/admin.html`
-- Kullanıcı: `admin`
-- Şifre: `admin2024`
+- Username: `admin`
+- Password: stored in `.env` (`ADMIN_ID`, `ADMIN_PASSWORD`)
 
-Kredi ekleme ve kullanıcı yönetimi buradan yapılır.
+Used for managing users and adding credits.
 
-## 📁 Dosya Yapısı
+## Project Structure
 
 ```
-betsite/
-├── .env                    # API anahtarı (GIT'E EKLEME!)
-├── .env.example            # Şablon
+fantasybet/
+├── .env                    # API key and admin credentials (not committed)
+├── .env.example            # Template
 ├── .gitignore
 ├── package.json
-├── server.js               # Express sunucu + zamanlayıcı
-├── fetch-data.js           # API-Football veri çekici
-├── data/
-│   └── matches.json        # Önbelleklenmiş maç verisi (otomatik)
-├── public/                 # Frontend dosyaları
-│   ├── index.html          # Giriş sayfası
-│   ├── app.html            # Ana bahis sayfası
-│   ├── admin.html          # Yönetici paneli
+├── server.js               # Express server, scheduler, settlement engine
+├── fetch-data.js           # API-Football data fetcher
+├── db.js                   # PostgreSQL connection pool and queries
+├── public/
+│   ├── index.html          # Login page
+│   ├── app.html            # Main betting page
+│   ├── admin.html          # Admin panel
 │   ├── css/
 │   │   └── style.css
 │   └── js/
-│       ├── config.js       # Kullanıcılar ve ayarlar
-│       ├── i18n.js         # Dil dosyaları (TR/EN/DE)
-│       └── matches.js      # Veri yükleyici (API + mock fallback)
+│       ├── config.js       # League priorities and bet category definitions
+│       ├── i18n.js         # Translations (TR/EN/DE)
+│       └── matches.js      # Data loader (API + mock fallback)
 └── README.md
 ```
 
-## 🛠 Manuel Komutlar / Manual Commands
+## CLI Commands
 
 ```bash
-# Tek seferlik tam yenileme
-node fetch-data.js --once
+# Check API account status
+node fetch-data.js --status
 
-# Sadece oranları güncelle
-node fetch-data.js --odds
+# Fetch fixtures (yesterday to day-after-tomorrow)
+node fetch-data.js --fixtures
 
-# Sadece skorları kontrol et
-node fetch-data.js --scores
+# Fetch live odds
+node fetch-data.js --live-odds
+
+# Fetch live fixture statuses
+node fetch-data.js --live-fixtures
 ```
 
-## 🌐 Canlıya Alma / Deployment
+## Deployment
 
-Herhangi bir Node.js hosting platformunda çalışır:
+Works on any Node.js hosting platform. Currently deployed on Railway with a PostgreSQL add-on.
 
-1. **Railway / Render / Fly.io** (önerilen):
-   - Repo'yu bağla
-   - Environment variable olarak `API_FOOTBALL_KEY` ekle
+1. **Railway** (recommended):
+   - Connect your repo
+   - Add a PostgreSQL plugin
+   - Set `API_FOOTBALL_KEY`, `ADMIN_ID`, `ADMIN_PASSWORD` as environment variables
+   - The `DATABASE_URL` is injected automatically by Railway
    - Start command: `npm start`
 
-2. **VPS (DigitalOcean, Hetzner vs.)**:
+2. **VPS**:
    ```bash
    git clone <repo>
-   cd betsite
+   cd fantasybet
    npm install
-   cp .env.example .env  # anahtarı düzenle
+   cp .env.example .env   # fill in your keys
    npm start
    ```
-   PM2 ile arka planda çalıştır: `pm2 start server.js --name betzone`
+   Use PM2 for background: `pm2 start server.js --name fantasybet`
 
-## 💡 Notlar
+## Notes
 
-- Kullanıcı verileri tarayıcının localStorage'ında saklanır
-- Gerçek para kullanılmaz, tamamen fantezi/eğitim amaçlıdır
-- Kullanıcılar 0 kredi ile başlar, admin tarafından kredi verilir
-- API anahtarı sunucu tarafında kalır, frontend'e asla sızmaz
+- No real money is involved. This is a portfolio/educational project.
+- Users start with 0 credits. Credits are granted by an admin.
+- The API key stays server-side and is never exposed to the frontend.
+- Supports three languages: Turkish, English, German.
+- Bets are settled automatically using match events, statistics, and scores from the API.
