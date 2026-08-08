@@ -82,7 +82,8 @@ async function migrateFromJSON(client) {
 
   console.log("[DB] Tables empty — migrating from JSON files...");
 
-  // Migrate users
+  // Migrate users from JSON, or seed defaults for fresh installs
+  let usersSeeded = false;
   try {
     if (fs.existsSync(USERS_FILE)) {
       const users = JSON.parse(fs.readFileSync(USERS_FILE, "utf-8"));
@@ -93,9 +94,27 @@ async function migrateFromJSON(client) {
         );
       }
       console.log(`[DB] Migrated ${users.length} users`);
+      usersSeeded = true;
     }
   } catch (e) {
     console.error("[DB] User migration error:", e.message);
+  }
+
+  if (!usersSeeded) {
+    const defaults = [
+      { id: "ali", password: "ali123", name: "Ali Yilmaz" },
+      { id: "max", password: "max123", name: "Max Richter" },
+      { id: "james", password: "james123", name: "James Cole" },
+      { id: "emre", password: "emre123", name: "Emre Celik" },
+      { id: "lena", password: "lena123", name: "Lena Weber" },
+    ];
+    for (const u of defaults) {
+      await client.query(
+        "INSERT INTO users (id, password, display_name, credits) VALUES ($1, $2, $3, 0) ON CONFLICT (id) DO NOTHING",
+        [u.id, u.password, u.name]
+      );
+    }
+    console.log(`[DB] Seeded ${defaults.length} default users`);
   }
 
   // Migrate bets
