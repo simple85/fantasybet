@@ -35,6 +35,7 @@ const {
   isApiKeyConfigured,
 } = require("./fetch-data");
 const db = require("./db");
+const auth = require("./auth");
 
 const app = express();
 const PORT = process.env.PORT || 8000;
@@ -84,6 +85,7 @@ app.use(compression({ filter: (req, res) => {
   return compression.filter(req, res);
 }}));
 app.use(express.json());
+app.use(auth.attachSession);
 app.use(express.static(path.join(__dirname, "public")));
 
 // ── /logout route: serve app.html which auto-detects and logs out ──
@@ -137,13 +139,18 @@ app.post("/api/auth/login", async (req, res) => {
 
   const adminId = process.env.ADMIN_ID || "admin";
   const adminPass = process.env.ADMIN_PASSWORD || "";
-  if (id.toLowerCase() === adminId.toLowerCase() && password === adminPass) {
+  // admin login is disabled (fails closed) until ADMIN_PASSWORD is set
+  if (adminPass && id.toLowerCase() === adminId.toLowerCase() && auth.safeEqual(password, adminPass)) {
+    auth.setSessionCookie(res, adminId.toLowerCase(), "admin");
     return res.json({ success: true, user: { id: adminId, displayName: "Admin", credits: 0, isAdmin: true } });
   }
 
   try {
     const user = await db.getUserById(id.toLowerCase());
-    if (user && user.password === password) {
+    if (user && auth.verifyPassword(password, user.password)) {
+      // re-hash passwords still stored in plaintext from before hashing was introduced
+      if (!auth.isHashed(user.password)) await db.updateUserPassword(user.id, auth.hashPassword(password));
+      auth.setSessionCookie(res, user.id, "user");
       res.json({ success: true, user: { id: user.id, displayName: user.displayName, credits: user.credits } });
     } else {
       res.json({ success: false, error: "Invalid credentials" });
@@ -153,17 +160,26 @@ app.post("/api/auth/login", async (req, res) => {
   }
 });
 
+app.post("/api/auth/logout", (req, res) => {
+  auth.clearSessionCookie(res);
+  res.json({ success: true });
+});
+
+app.get("/api/auth/me", auth.requireUser, (req, res) => {
+  res.json({ success: true, user: { id: req.session.userId, isAdmin: req.session.role === "admin" } });
+});
+
 // ══════════════════════════════════════════
 // USER ROUTES
 // ══════════════════════════════════════════
-app.get("/api/users", async (req, res) => {
+app.get("/api/users", auth.requireAdmin, async (req, res) => {
   try {
     const users = await db.getUsers();
     res.json(users.map(u => ({ id: u.id, displayName: u.displayName, credits: u.credits })));
   } catch (e) { res.status(500).json({ error: "Database error" }); }
 });
 
-app.post("/api/users", async (req, res) => {
+app.post("/api/users", auth.requireAdmin, async (req, res) => {
   const { id, password, displayName } = req.body;
   if (!id || !password || !displayName) {
     return res.status(400).json({ success: false, error: "Missing fields" });
@@ -171,12 +187,12 @@ app.post("/api/users", async (req, res) => {
   try {
     const existing = await db.getUserById(id.toLowerCase().trim());
     if (existing) return res.status(409).json({ success: false, error: "User already exists" });
-    await db.createUser(id.toLowerCase().trim(), password, displayName.trim());
+    await db.createUser(id.toLowerCase().trim(), auth.hashPassword(password), displayName.trim());
     res.json({ success: true, user: { id: id.toLowerCase().trim(), displayName: displayName.trim(), credits: 0 } });
   } catch (e) { res.status(500).json({ success: false, error: "Database error" }); }
 });
 
-app.delete("/api/users/:id", async (req, res) => {
+app.delete("/api/users/:id", auth.requireAdmin, async (req, res) => {
   try {
     const deleted = await db.deleteUser(req.params.id);
     if (!deleted) return res.status(404).json({ success: false, error: "User not found" });
@@ -184,7 +200,7 @@ app.delete("/api/users/:id", async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: "Database error" }); }
 });
 
-app.post("/api/users/:id/credits", async (req, res) => {
+app.post("/api/users/:id/credits", auth.requireAdmin, async (req, res) => {
   const { action, amount } = req.body;
   try {
     const user = await db.getUserById(req.params.id);
@@ -204,7 +220,7 @@ app.post("/api/users/:id/credits", async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: "Database error" }); }
 });
 
-app.get("/api/users/:id", async (req, res) => {
+app.get("/api/users/:id", auth.requireSelfOrAdmin("id"), async (req, res) => {
   try {
     const user = await db.getUserById(req.params.id);
     if (!user) return res.status(404).json({ success: false });
@@ -212,12 +228,41 @@ app.get("/api/users/:id", async (req, res) => {
   } catch (e) { res.status(500).json({ success: false }); }
 });
 
+// ── Stake, cost and payout of a new bet, computed on the server ──
+// The browser's own totals are ignored so nobody can send a negative stake or inflate the payout.
+function quoteBet({ selections, stake, mode }) {
+  const betMode = mode || "combined";
+  if (!["combined", "system"].includes(betMode)) return { error: "Invalid bet mode" };
+  const amount = Number(stake);
+  if (!Number.isFinite(amount) || amount <= 0) return { error: "Stake must be a positive amount" };
+  const odds = selections.map((s) => Number(s && s.odd));
+  if (odds.some((o) => !Number.isFinite(o) || o < 1)) return { error: "Invalid odds" };
+
+  const round = (n) => Math.round(n * 100) / 100;
+  if (betMode === "system") {
+    return {
+      mode: betMode,
+      stake: amount,
+      totalCost: round(amount * odds.length),
+      totalOdds: 0,
+      possibleWin: round(odds.reduce((sum, o) => sum + amount * o, 0)),
+    };
+  }
+  const totalOdds = odds.reduce((acc, o) => acc * o, 1);
+  return { mode: betMode, stake: amount, totalCost: amount, totalOdds: round(totalOdds), possibleWin: round(amount * totalOdds) };
+}
+
 // ══════════════════════════════════════════
 // BET ROUTES
 // ══════════════════════════════════════════
-app.post("/api/bets", async (req, res) => {
-  const { userId, selections, stake, totalOdds, possibleWin, mode } = req.body;
-  if (!userId || !selections || !stake || (totalOdds == null && !mode)) {
+app.post("/api/bets", auth.requireUser, async (req, res) => {
+  // bets are always placed for the logged-in user, never for an id sent by the browser
+  const userId = req.session.userId;
+  const { selections, stake, totalOdds, mode } = req.body;
+  if (req.session.role === "admin") {
+    return res.status(403).json({ success: false, error: "Admins cannot place bets" });
+  }
+  if (!Array.isArray(selections) || selections.length === 0 || !stake || (totalOdds == null && !mode)) {
     return res.status(400).json({ success: false, error: "Missing fields" });
   }
 
@@ -239,19 +284,20 @@ app.post("/api/bets", async (req, res) => {
     }
   }
 
-  const betMode = mode || "combined";
-  const totalCost = betMode === "system" ? parseFloat(stake) * selections.length : parseFloat(stake);
+  const quote = quoteBet({ selections, stake, mode });
+  if (quote.error) return res.status(400).json({ success: false, error: quote.error });
 
   const bet = {
     id: "FB" + Date.now().toString(36).toUpperCase(),
     userId,
     timestamp: new Date().toISOString(),
-    mode: betMode,
+    mode: quote.mode,
     selections,
-    stake: parseFloat(stake),
-    totalOdds: parseFloat(totalOdds),
-    possibleWin: parseFloat(possibleWin),
+    stake: quote.stake,
+    totalOdds: quote.totalOdds,
+    possibleWin: quote.possibleWin,
   };
+  const totalCost = quote.totalCost;
 
   try {
     const result = await db.placeBetTransaction(userId, totalCost, bet);
@@ -263,7 +309,7 @@ app.post("/api/bets", async (req, res) => {
   }
 });
 
-app.get("/api/bets/:userId", async (req, res) => {
+app.get("/api/bets/:userId", auth.requireSelfOrAdmin("userId"), async (req, res) => {
   try {
     const bets = await db.getBetsByUser(req.params.userId);
     res.json(bets);
@@ -306,15 +352,15 @@ app.get("/api/status", (req, res) => {
 // ══════════════════════════════════════════
 // MANUAL TRIGGERS
 // ══════════════════════════════════════════
-app.post("/api/fetch/daily", async (req, res) => {
+app.post("/api/fetch/daily", auth.requireAdmin, async (req, res) => {
   try { await dailyRefresh(); res.json({ success: true, matchCount: matches.length }); }
   catch (err) { res.status(500).json({ success: false, error: err.message }); }
 });
-app.post("/api/fetch/prematch", async (req, res) => {
+app.post("/api/fetch/prematch", auth.requireAdmin, async (req, res) => {
   try { await refreshPreMatchOdds(); res.json({ success: true }); }
   catch (err) { res.status(500).json({ success: false, error: err.message }); }
 });
-app.post("/api/settle", async (req, res) => {
+app.post("/api/settle", auth.requireAdmin, async (req, res) => {
   const result = await settleBets();
   res.json({ success: true, ...result });
 });
@@ -821,6 +867,52 @@ function evaluateByName(name, pick, h, a, total, ht, htH, htA, htTotal, h2H, h2A
   return null; // no name match — fall through to ID-based
 }
 
+// ── Payout calculation for a bet whose selections all have a result ──
+// combined: any lost → lost; void legs count as odds 1.0; all void → stake refunded
+// system:   each selection is its own single bet of `stake`
+function computeBetOutcome(bet) {
+  let status, payout = 0, finalOdds = bet.totalOdds, finalWin = bet.possibleWin;
+
+  if (bet.mode === "system") {
+    let totalPayout = 0;
+    let wonCount = 0, lostCount = 0, voidCount = 0;
+    for (const sel of bet.selections) {
+      if (sel.result === "won") { totalPayout += bet.stake * sel.odd; wonCount++; }
+      else if (sel.result === "void") { totalPayout += bet.stake; voidCount++; }
+      else { lostCount++; }
+    }
+    payout = Math.round(totalPayout * 100) / 100;
+    finalWin = payout;
+    if (wonCount === 0 && voidCount === 0) status = "lost";
+    else if (wonCount === 0 && voidCount > 0 && lostCount === 0) status = "void";
+    else status = wonCount > 0 ? "won" : "void";
+  } else {
+    const anyLost = bet.selections.some(s => s.result === "lost");
+    const anyVoid = bet.selections.some(s => s.result === "void");
+    if (anyLost) {
+      status = "lost";
+      payout = 0;
+    } else if (anyVoid) {
+      const allVoid = bet.selections.every(s => s.result === "void");
+      if (allVoid) {
+        status = "void";
+        payout = bet.stake;
+      } else {
+        const adjustedOdds = bet.selections.reduce((acc, s) => acc * (s.result === "void" ? 1.0 : s.odd), 1.0);
+        payout = Math.round(bet.stake * adjustedOdds * 100) / 100;
+        status = "won";
+        finalOdds = Math.round(adjustedOdds * 100) / 100;
+        finalWin = payout;
+      }
+    } else {
+      status = "won";
+      payout = bet.possibleWin;
+    }
+  }
+
+  return { status, payout, finalOdds, finalWin };
+}
+
 let _settleBusy = false;
 async function settleBets() {
   if (_settleBusy) return { settled: 0 };
@@ -901,42 +993,7 @@ async function _settleBetsInner() {
 
     if (!allFinished) continue;
 
-    let status, payout = 0, finalOdds = bet.totalOdds, finalWin = bet.possibleWin;
-
-    if (bet.mode === "system") {
-      let totalPayout = 0;
-      let wonCount = 0, lostCount = 0, voidCount = 0;
-      for (const sel of bet.selections) {
-        if (sel.result === "won") { totalPayout += bet.stake * sel.odd; wonCount++; }
-        else if (sel.result === "void") { totalPayout += bet.stake; voidCount++; }
-        else { lostCount++; }
-      }
-      payout = Math.round(totalPayout * 100) / 100;
-      finalWin = payout;
-      if (wonCount === 0 && voidCount === 0) status = "lost";
-      else if (wonCount === 0 && voidCount > 0 && lostCount === 0) status = "void";
-      else status = wonCount > 0 ? "won" : "void";
-    } else {
-      if (anyLost) {
-        status = "lost";
-        payout = 0;
-      } else if (anyVoid) {
-        const allVoid = bet.selections.every(s => s.result === "void");
-        if (allVoid) {
-          status = "void";
-          payout = bet.stake;
-        } else {
-          const adjustedOdds = bet.selections.reduce((acc, s) => acc * (s.result === "void" ? 1.0 : s.odd), 1.0);
-          payout = Math.round(bet.stake * adjustedOdds * 100) / 100;
-          status = "won";
-          finalOdds = Math.round(adjustedOdds * 100) / 100;
-          finalWin = payout;
-        }
-      } else {
-        status = "won";
-        payout = bet.possibleWin;
-      }
-    }
+    const { status, payout, finalOdds, finalWin } = computeBetOutcome(bet);
 
     try {
       await db.settleBetTransaction(bet.id, status, finalWin, finalOdds, bet.selections, bet.userId, payout);
@@ -1249,31 +1306,45 @@ function startEngine() {
 // ══════════════════════════════════════════
 // START SERVER
 // ══════════════════════════════════════════
-app.listen(PORT, async () => {
-  console.log("=".repeat(50));
-  console.log(`FantasyBet server running at http://localhost:${PORT}`);
-  console.log("=".repeat(50));
+function startServer() {
+  return app.listen(PORT, async () => {
+    console.log("=".repeat(50));
+    console.log(`FantasyBet server running at http://localhost:${PORT}`);
+    console.log("=".repeat(50));
 
-  // Initialize database (create tables + migrate JSON if needed)
-  try {
-    await db.initDB();
-    const dbMatches = await db.loadMatches();
-    if (dbMatches.length > 0) {
-      matches = dbMatches;
-      lastMatchUpdate = new Date().toISOString();
-      console.log(`[INIT] Loaded ${matches.length} matches from database`);
+    // Initialize database (create tables + migrate JSON if needed)
+    try {
+      await db.initDB();
+      const dbMatches = await db.loadMatches();
+      if (dbMatches.length > 0) {
+        matches = dbMatches;
+        lastMatchUpdate = new Date().toISOString();
+        console.log(`[INIT] Loaded ${matches.length} matches from database`);
+      }
+    } catch (e) {
+      console.error("[DB] Init failed:", e.message);
+      console.error("Check DATABASE_URL environment variable");
     }
-  } catch (e) {
-    console.error("[DB] Init failed:", e.message);
-    console.error("Check DATABASE_URL environment variable");
-  }
 
-  if (!isApiKeyConfigured()) {
-    console.log("API key not configured. Edit .env and set API_FOOTBALL_KEY");
-    console.log("The site will work with mock data until then.\n");
-  } else {
-    console.log("API key configured. Starting real-time engine...\n");
-  }
+    if (!isApiKeyConfigured()) {
+      console.log("API key not configured. Edit .env and set API_FOOTBALL_KEY");
+      console.log("The site will work with mock data until then.\n");
+    } else {
+      console.log("API key configured. Starting real-time engine...\n");
+    }
 
-  startEngine();
-});
+    startEngine();
+  });
+}
+
+if (require.main === module) {
+  startServer();
+}
+
+// test hook: lets tests seed the in-memory match state
+function __setState(state) {
+  if (state.matches) matches = state.matches;
+  if (state.currentLiveOdds) currentLiveOdds = state.currentLiveOdds;
+}
+
+module.exports = { app, startServer, evaluateSelection, computeBetOutcome, quoteBet, settleBets, __setState };

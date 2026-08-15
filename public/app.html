@@ -422,6 +422,8 @@
       // Refresh credits from server
       try {
         const res = await fetch("/api/users/" + currentUser.id);
+        // session cookie expired or missing → log in again
+        if (res.status === 401 || res.status === 403) { localStorage.removeItem("betzone_user"); window.location.href = "index.html"; return; }
         if (res.ok) {
           const fresh = await res.json();
           currentUser.credits = fresh.credits;
@@ -829,7 +831,10 @@
       }
     }
 
-    function logout() { localStorage.removeItem("betzone_user"); window.location.href = "index.html"; }
+    function logout() {
+      localStorage.removeItem("betzone_user");
+      fetch("/api/auth/logout", { method: "POST" }).finally(() => { window.location.href = "index.html"; });
+    }
 
     // ── /logout URL support (mobile) ──
     if (window.location.pathname.endsWith("/logout") || window.location.hash === "#logout") {
@@ -1992,7 +1997,6 @@
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              userId: currentUser.id,
               selections: [...betSlip],
               stake,
               totalOdds: 0,
@@ -2025,7 +2029,6 @@
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              userId: currentUser.id,
               selections: [...betSlip],
               stake,
               totalOdds,

@@ -6,6 +6,7 @@
 // One-time migration reads old JSON files from disk if tables are empty.
 
 const { Pool } = require("pg");
+const { hashPassword } = require("./auth");
 const fs = require("fs");
 const path = require("path");
 
@@ -111,7 +112,7 @@ async function migrateFromJSON(client) {
     for (const u of defaults) {
       await client.query(
         "INSERT INTO users (id, password, display_name, credits) VALUES ($1, $2, $3, 0) ON CONFLICT (id) DO NOTHING",
-        [u.id, u.password, u.name]
+        [u.id, hashPassword(u.password), u.name]
       );
     }
     console.log(`[DB] Seeded ${defaults.length} default users`);
@@ -189,6 +190,10 @@ async function createUser(id, password, displayName) {
     "INSERT INTO users (id, password, display_name, credits) VALUES ($1, $2, $3, 0)",
     [id, password, displayName]
   );
+}
+
+async function updateUserPassword(id, passwordHash) {
+  await pool.query("UPDATE users SET password = $1 WHERE id = $2", [passwordHash, id]);
 }
 
 async function deleteUser(id) {
@@ -364,6 +369,7 @@ module.exports = {
   getUsers,
   getUserById,
   createUser,
+  updateUserPassword,
   deleteUser,
   updateUserCredits,
   getBetsByUser,

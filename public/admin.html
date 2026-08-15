@@ -82,10 +82,11 @@
       if (e.key === "Enter") adminLogin();
     });
 
-    // Check session
-    if (sessionStorage.getItem("betzone_admin") === "true") {
-      showAdminPanel();
-    }
+    // Check session (the httpOnly cookie is the source of truth)
+    fetch("/api/auth/me")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => { if (data && data.user.isAdmin) showAdminPanel(); })
+      .catch(() => {});
 
     async function adminLogin() {
       const id = document.getElementById("adminId").value.trim();
@@ -100,7 +101,6 @@
         });
         const data = await res.json();
         if (data.success && data.user.isAdmin) {
-          sessionStorage.setItem("betzone_admin", "true");
           showAdminPanel();
         } else {
           errorEl.textContent = t("loginError");
@@ -115,8 +115,7 @@
     }
 
     function adminLogout() {
-      sessionStorage.removeItem("betzone_admin");
-      location.reload();
+      fetch("/api/auth/logout", { method: "POST" }).finally(() => location.reload());
     }
 
     async function showAdminPanel() {
@@ -130,6 +129,7 @@
     async function loadUsers() {
       try {
         const res = await fetch("/api/users");
+        if (res.status === 401 || res.status === 403) { adminLogout(); return; }
         usersData = await res.json();
       } catch (e) {
         usersData = [];
