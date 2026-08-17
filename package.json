@@ -5,7 +5,9 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "fetch": "node fetch-data.js --once"
+    "fetch": "node fetch-data.js --once",
+    "test": "jest",
+    "test:coverage": "jest --coverage"
   },
   "dependencies": {
     "compression": "^1.8.1",
@@ -14,6 +16,19 @@
     "pg": "^8.21.0"
   },
   "devDependencies": {
+    "jest": "^29.7.0",
+    "supertest": "^7.3.1",
     "xlsx": "^0.18.5"
-  }
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "collectCoverageFrom": [
+      "server.js"
+    ],
+    "coverageReporters": [
+      "text-summary",
+      "lcov"
+    ]
+  },
+  "license": "MIT"
 }
