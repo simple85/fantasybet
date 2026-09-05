@@ -27,8 +27,6 @@ The site works without an API key — it starts with mock data and switches to l
    API_FOOTBALL_KEY=your_key_here
    ```
 
-The `.env` file is protected by `.gitignore` and will never be pushed to the repository.
-
 ## Data Refresh Schedule
 
 | Time | Action | Est. Daily API Calls |
@@ -104,7 +102,7 @@ node fetch-data.js --live-fixtures
 
 ## Deployment
 
-Works on any Node.js hosting platform. Currently deployed on Railway with a PostgreSQL add-on.
+Works on any Node.js hosting platform.
 
 1. **Railway** (recommended):
    - Connect your repo
@@ -125,7 +123,7 @@ Works on any Node.js hosting platform. Currently deployed on Railway with a Post
 
 ## Notes
 
-- No real money is involved. This is a portfolio/educational project.
+- No real money is involved. This is a portfolio project.
 - Users start with 0 credits. Credits are granted by an admin.
 - The API key stays server-side and is never exposed to the frontend.
 - Supports three languages: Turkish, English, German.
