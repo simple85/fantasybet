@@ -403,6 +403,18 @@ describe("POST /api/bets — server-side pricing", () => {
   });
 });
 
+describe("POST /api/bets — pre-match betting closes at kickoff", () => {
+  test("refuses pre-match odds once the kickoff time has passed, even if the status still says Not Started", async () => {
+    // on a small API plan the status can lag the real kickoff by minutes
+    __setState({ matches: [{ ...prematch(1), date: new Date(Date.now() - 60_000).toISOString() }] });
+    const agent = await loginAs("ali", "ali123");
+    db.getUserById.mockResolvedValue(user);
+    const res = await agent.post("/api/bets").send({ selections: [{ matchId: 1, betId: 1, pick: "Home", odd: 2 }], stake: 10, mode: "combined" });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/Betting closed/);
+  });
+});
+
 describe("POST /api/bets — live integrity guard", () => {
   const liveMatch = { ...prematch(5), status: "Second Half", statusShort: "2H", elapsed: 62, score: { home: 1, away: 0 } };
   const liveOdds = (odd = "1.40") => [{ fixtureId: 5, odds: [{ id: 59, name: "Fulltime Result", values: [{ value: "Home", odd, suspended: false }] }] }];
