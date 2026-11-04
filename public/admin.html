@@ -173,7 +173,7 @@
               '<div class="integrity-card__head"><strong>@' + escapeHtml(f.userId) + '</strong>' +
               '<span class="integrity-score"><span style="width:' + pct + '%"></span></span><span class="integrity-pct">' + pct + '</span></div>' +
               '<ul>' + reasons.map(r => '<li>' + escapeHtml(r) + '</li>').join("") + '</ul>' +
-              '<div class="integrity-facts">' + escapeHtml(f.features.n_bets) + ' bets · luck z ' + escapeHtml(f.features.luck_z) +
+              '<div class="integrity-facts">' + escapeHtml(f.features.n_bets) + ' bets · luck z ' + escapeHtml(Number(f.features.luck_z).toFixed(1)) +
               ' · live share ' + Math.round((f.features.live_share || 0) * 100) + '%</div>' +
             '</div>';
           }).join("");

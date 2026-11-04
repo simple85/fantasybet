@@ -38,6 +38,7 @@ const db = require("./db");
 const auth = require("./auth");
 const pricing = require("./pricing");
 const integrity = require("./integrity");
+const betBuilder = require("./betBuilder");
 
 const app = express();
 const PORT = process.env.PORT || 8000;
@@ -346,6 +347,67 @@ app.post("/api/bets", auth.requireUser, async (req, res) => {
   } catch (e) {
     console.error("[BET] Error:", e.message);
     res.status(500).json({ success: false, error: "Database error" });
+  }
+});
+
+// ══════════════════════════════════════════
+// BET BUILDER (natural language → proposed slip, see betBuilder.js)
+// ══════════════════════════════════════════
+const BET_BUILDER_DAILY_LIMIT = Number(process.env.BET_BUILDER_DAILY_LIMIT || 40);
+let _betBuilderGenerate = null; // created on first use; tests inject a fake
+
+function validTimeZone(tz) {
+  try { new Intl.DateTimeFormat("en", { timeZone: tz }); return true; } catch { return false; }
+}
+
+function cleanBuilderRequest(body) {
+  const { message, history, slip, lang, tz } = body || {};
+  if (typeof message !== "string" || !message.trim() || message.length > 500) return null;
+  const turns = Array.isArray(history) ? history.slice(-8) : [];
+  if (!turns.every(h => h && (h.role === "user" || h.role === "model") && typeof h.text === "string" && h.text.length <= 1000)) return null;
+  let cleanSlip = null;
+  if (slip && Array.isArray(slip.selections) && slip.selections.length <= 20) {
+    cleanSlip = {
+      mode: slip.mode === "system" ? "system" : "combined",
+      stake: Number.isFinite(Number(slip.stake)) ? Number(slip.stake) : null,
+      selections: slip.selections.map(s => ({ matchId: Number(s.matchId), betId: Number(s.betId), pick: String(s.pick).slice(0, 60) })),
+    };
+  }
+  return {
+    message: message.trim(),
+    history: turns.map(h => ({ role: h.role, text: h.text })),
+    slip: cleanSlip,
+    lang: ["tr", "en", "de"].includes(lang) ? lang : "en",
+    tz: typeof tz === "string" && validTimeZone(tz) ? tz : "Europe/Istanbul",
+  };
+}
+
+app.post("/api/bet-builder", auth.requireUser, async (req, res) => {
+  if (req.session.role === "admin") return res.status(403).json({ error: "Admins cannot place bets" });
+  if (!_betBuilderGenerate && !process.env.GEMINI_API_KEY) return res.status(503).json({ error: "not_configured" });
+  const input = cleanBuilderRequest(req.body);
+  if (!input) return res.status(400).json({ error: "invalid_input" });
+
+  const userId = req.session.userId;
+  try {
+    if ((await db.betBuilderCallsLastDay(userId)) >= BET_BUILDER_DAILY_LIMIT) {
+      return res.status(429).json({ error: "daily_limit" });
+    }
+    if (!_betBuilderGenerate) _betBuilderGenerate = betBuilder.geminiGenerate();
+    const result = await betBuilder.runBetBuilder(input, {
+      generate: _betBuilderGenerate,
+      getMatches: () => matches,
+      getLiveOdds: () => currentLiveOdds,
+      isLive: m => LIVE_SHORT.has(m.statusShort),
+      isFinished: m => FINISHED_SHORT.has(m.statusShort) || SETTLED_STATUSES_BET.has(m.status) || VOID_STATUSES_BET.has(m.status),
+      quoteBet,
+      onUsage: u => Promise.resolve(db.logBetBuilderUsage({ userId, ...u })).catch(e => console.error("[BET-BUILDER] usage log:", e.message)),
+    });
+    res.json(result);
+  } catch (e) {
+    const code = betBuilder.errorCode(e);
+    console.error(`[BET-BUILDER] ${code}:`, e.message);
+    res.status(code === "busy" ? 429 : code === "not_configured" ? 503 : 502).json({ error: code });
   }
 });
 
@@ -1408,6 +1470,7 @@ if (require.main === module) {
 function __setState(state) {
   if (state.matches) matches = state.matches;
   if (state.currentLiveOdds) currentLiveOdds = state.currentLiveOdds;
+  if ("betBuilderGenerate" in state) _betBuilderGenerate = state.betBuilderGenerate;
 }
 
 module.exports = { app, startServer, evaluateSelection, computeBetOutcome, quoteBet, settleBets, __setState };

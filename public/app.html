@@ -314,6 +314,14 @@
           <button class="mode-btn active" id="modeCombined" onclick="setBetSlipMode('combined')">Combined</button>
           <button class="mode-btn" id="modeSystem" onclick="setBetSlipMode('system')">System</button>
         </div>
+        <div class="bb" id="betBuilder">
+          <form class="bb-form" onsubmit="event.preventDefault(); sendBetBuilder();">
+            <span class="bb-icon" aria-hidden="true">✨</span>
+            <input id="bbInput" maxlength="500" autocomplete="off" aria-label="Describe your bet">
+            <button type="submit" id="bbSend" aria-label="Send">➤</button>
+          </form>
+          <div class="bb-thread" id="bbThread" aria-live="polite"></div>
+        </div>
         <div class="betslip-body" id="betslipBody">
           <div class="betslip-empty" id="betslipEmpty">
             <div class="icon">🎫</div>
@@ -795,6 +803,7 @@
       document.getElementById("betslipTitle").textContent = t("betSlip");
       document.getElementById("emptySlipText").textContent = t("emptySlip");
       document.getElementById("emptySlipHint").textContent = t("addTip");
+      document.getElementById("bbInput").placeholder = t("bbPlaceholder");
       document.getElementById("stakeLabel").textContent = t("stake");
       document.getElementById("totalOddsLabel").textContent = t("totalOdds");
       document.getElementById("possibleWinLabel").textContent = t("possibleWin");
@@ -1967,14 +1976,100 @@
     }
 
     // The server priced the slip differently (odds moved): show the new prices and let the user decide again.
-    function applyOddsChanges(changes) {
+    // With "accept odds changes" on, the new prices are taken and the bet resubmitted once.
+    function applyOddsChanges(changes, isRetry) {
       for (const c of changes) {
         const sel = betSlip.find(s => s.matchId === c.matchId && s.betId === c.betId && s.pick === c.pick);
         if (sel) sel.odd = c.odd;
       }
       renderBetSlip();
       updateSlipSummary();
+      if (acceptOddsChanges && !isRetry) { placeBet(true); return; }
       showToast(t("oddsChangedRetry"), "error");
+    }
+
+    // ── Bet builder: describe a bet in words, get a server-priced slip to add (see betBuilder.js) ──
+    let bbHistory = [];      // [{ role: "user"|"model", text }]
+    let bbProposal = null;   // the slip last proposed by the server
+    let bbBusy = false;
+
+    function bbEscape(v) {
+      return String(v ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    }
+
+    async function sendBetBuilder() {
+      const input = document.getElementById("bbInput");
+      const message = input.value.trim();
+      if (!message || bbBusy) return;
+      bbBusy = true;
+      input.value = "";
+      bbHistory.push({ role: "user", text: message });
+      renderBetBuilder();
+      let entry;
+      try {
+        const res = await fetch("/api/bet-builder", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            message,
+            history: bbHistory.slice(0, -1).slice(-8),
+            slip: bbProposal,
+            lang: getCurrentLang(),
+            tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) entry = { role: "model", text: t("bbError_" + (data.error || "internal")) || t("bbError_internal"), error: true };
+        else {
+          if (data.proposal) bbProposal = data.proposal;
+          entry = { role: "model", text: data.reply || t("bbNotice_" + (data.notice || "model_error")) };
+        }
+      } catch (e) {
+        entry = { role: "model", text: t("bbError_internal"), error: true };
+      }
+      bbHistory.push(entry);
+      bbBusy = false;
+      renderBetBuilder();
+    }
+
+    function renderBetBuilder() {
+      const thread = document.getElementById("bbThread");
+      const turns = bbHistory.slice(-4).map(h =>
+        '<div class="bb-msg bb-msg--' + h.role + (h.error ? ' bb-msg--error' : '') + '">' + bbEscape(h.text) + '</div>').join("");
+      const thinking = bbBusy ? '<div class="bb-msg bb-msg--model bb-thinking">' + bbEscape(t("bbThinking")) + '</div>' : "";
+      let card = "";
+      if (bbProposal) {
+        const p = bbProposal;
+        card = '<div class="bb-card">' +
+          p.selections.map(s => '<div class="bb-sel"><div class="bb-sel__match">' + bbEscape(s.matchLabel) + '</div>' +
+            '<div class="bb-sel__pick">' + bbEscape(betName ? betName(s.betId, s.marketLabel) : s.marketLabel) + ': <strong>' + bbEscape(s.pick) + '</strong>' +
+            '<span class="bb-sel__odd">' + Number(s.odd).toFixed(2) + '</span></div></div>').join("") +
+          '<div class="bb-card__totals">' +
+            (p.totalOdds ? '<span>' + bbEscape(t("totalOdds")) + ' <strong>' + Number(p.totalOdds).toFixed(2) + '</strong></span>' : '<span>' + bbEscape(t("system")) + '</span>') +
+            (p.stake != null ? '<span>' + bbEscape(t("stake")) + ' <strong>' + p.stake + '</strong></span>' : '') +
+            (p.possibleWin != null ? '<span>' + bbEscape(t("possibleWin")) + ' <strong>' + Number(p.possibleWin).toFixed(2) + '</strong></span>' : '') +
+          '</div>' +
+          '<div class="bb-card__actions"><button class="bb-add" onclick="addProposalToSlip()">' + bbEscape(t("bbAdd")) + '</button>' +
+          '<button class="bb-dismiss" onclick="bbProposal = null; renderBetBuilder();" aria-label="✕">✕</button></div>' +
+        '</div>';
+      }
+      thread.innerHTML = turns + thinking + card;
+      document.getElementById("bbSend").disabled = bbBusy;
+      thread.scrollTop = thread.scrollHeight;
+    }
+
+    // The proposal goes into the normal bet slip; the user still checks it and presses Place bet.
+    function addProposalToSlip() {
+      if (!bbProposal) return;
+      betSlip = bbProposal.selections.map(s => ({ ...s }));
+      setBetSlipMode(bbProposal.mode);
+      if (bbProposal.stake != null) document.getElementById("stakeInput").value = bbProposal.stake;
+      renderBetSlip();
+      syncOddButtons();
+      updateSlipSummary();
+      bbProposal = null;
+      renderBetBuilder();
+      showToast(t("bbAdded"), "success");
     }
 
     function translateServerError(err) {
@@ -1987,7 +2082,7 @@
       return err;
     }
 
-    async function placeBet() {
+    async function placeBet(isRetry = false) {
       const stake = parseFloat(document.getElementById("stakeInput").value) || 0;
       // Refresh credits from server
       try {
@@ -2020,7 +2115,7 @@
             })
           });
           const data = await res.json();
-          if (data.changes) { applyOddsChanges(data.changes); return; }
+          if (data.changes) { applyOddsChanges(data.changes, isRetry); return; }
           if (data.success) {
             currentUser.credits = data.credits;
             localStorage.setItem("betzone_user", JSON.stringify(currentUser));
@@ -2053,7 +2148,7 @@
             })
           });
           const data = await res.json();
-          if (data.changes) { applyOddsChanges(data.changes); return; }
+          if (data.changes) { applyOddsChanges(data.changes, isRetry); return; }
           if (data.success) {
             currentUser.credits = data.credits;
             localStorage.setItem("betzone_user", JSON.stringify(currentUser));
@@ -2206,7 +2301,7 @@
 
     // ── MOBILE ──
     function toggleSlipMobile() {
-      if (betSlip.length === 0) return;
+      // Opens even when empty: the bet builder lives at the top of the slip.
       document.getElementById("betslipSidebar").classList.toggle("open");
     }
 
@@ -2214,7 +2309,7 @@
       document.getElementById("betslipSidebar").classList.remove("open");
     }
 
-    // Betslip: click to toggle, touch-drag to slide
+    // Betslip: click to toggle, touch-drag to slide (also when empty: the bet builder is inside)
     (function() {
       const sidebar = document.getElementById("betslipSidebar");
       const header = document.getElementById("betslipHeader");
@@ -2224,7 +2319,6 @@
 
       // ── Touch drag (slide up/down) ──
       header.addEventListener("touchstart", function(e) {
-        if (betSlip.length === 0) return;
         startY = e.touches[0].clientY;
         isDragging = false;
         suppressClick = false;
@@ -2232,7 +2326,6 @@
       });
 
       header.addEventListener("touchmove", function(e) {
-        if (betSlip.length === 0) return;
         const currentY = e.touches[0].clientY;
         const moved = Math.abs(currentY - startY);
         // Only start dragging after 8px threshold (ignore tiny finger jitter)
@@ -2267,7 +2360,6 @@
       // ── Click handles all taps (works on both touch and desktop) ──
       header.addEventListener("click", function() {
         if (suppressClick) { suppressClick = false; return; }
-        if (betSlip.length === 0) return;
         sidebar.classList.toggle("open");
       });
     })();
