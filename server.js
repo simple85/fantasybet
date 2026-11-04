@@ -222,6 +222,17 @@ app.post("/api/users/:id/credits", auth.requireAdmin, async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: "Database error" }); }
 });
 
+// ── Integrity review (admin): the latest offline scoring run + recent refused live bets ──
+app.get("/api/admin/integrity", auth.requireAdmin, async (req, res) => {
+  try {
+    const [flags, refused] = await Promise.all([db.getLatestIntegrityFlags(), db.getRecentIntegrityEvents(30)]);
+    res.json({ flags, refused });
+  } catch (e) {
+    console.error("[INTEGRITY] review error:", e.message);
+    res.status(500).json({ flags: [], refused: [] });
+  }
+});
+
 app.get("/api/users/:id", auth.requireSelfOrAdmin("id"), async (req, res) => {
   try {
     const user = await db.getUserById(req.params.id);
@@ -1016,6 +1027,11 @@ async function _settleBetsInner() {
         }
       }
       sel.result = result;
+      // Keep the goal timeline on live selections: the integrity detection (ml/integrity) compares
+      // it with the bet's snapshot, and old matches are dropped from memory by the daily refresh.
+      if (sel.live && match.events && Array.isArray(match.events.goals)) {
+        sel.goals = match.events.goals.map(g => ({ minute: g.minute, side: g.teamId === match.home?.id ? "home" : "away" }));
+      }
       if (result === "void") anyVoid = true;
       else if (result === "lost") anyLost = true;
     }

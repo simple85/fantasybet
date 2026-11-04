@@ -2217,3 +2217,19 @@ input {
   background: var(--yellow-dim);
   color: var(--yellow);
 }
+
+/* ── Admin: integrity review ── */
+.integrity-section { margin-top: 2rem; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 1.2rem; }
+.integrity-section h3 { font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 0.4rem; }
+.integrity-section h4 { font-size: 0.8rem; color: var(--text-secondary); margin: 1.4rem 0 0.6rem; }
+.integrity-hint, .integrity-meta, .integrity-empty { font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 0.8rem; }
+.integrity-card { border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.8rem 1rem; margin-bottom: 0.6rem; }
+.integrity-card__head { display: flex; align-items: center; gap: 0.8rem; }
+.integrity-card ul { margin: 0.5rem 0 0.3rem 1.1rem; font-size: 0.85rem; }
+.integrity-score { flex: 1; max-width: 160px; height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; }
+.integrity-score span { display: block; height: 100%; background: #e5534b; }
+.integrity-pct { font-size: 0.8rem; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.integrity-facts { font-size: 0.75rem; color: var(--text-secondary); }
+.integrity-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+.integrity-table th, .integrity-table td { text-align: left; padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border); }
+@media (max-width: 600px) { .integrity-table { display: block; overflow-x: auto; white-space: nowrap; } }

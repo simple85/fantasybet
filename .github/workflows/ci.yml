@@ -19,3 +19,24 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run test:coverage
+
+  integrity-model:
+    name: Integrity model (Python)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ml
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: ml/pyproject.toml
+      - run: pip install -e ".[dev]"
+      - run: pytest -q
+      - run: python -m integrity evaluate --out reports/evaluation-ci.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: integrity-evaluation
+          path: ml/reports/evaluation-ci.md

@@ -539,3 +539,21 @@ describe("settleBets", () => {
     expect(db.settleBetTransaction).toHaveBeenCalledWith("FB3", "void", 20, 2, expect.any(Array), "ali", 10);
   });
 });
+
+describe("GET /api/admin/integrity", () => {
+  test("is for admins only", async () => {
+    const agent = await loginAs("ali", "ali123");
+    await agent.get("/api/admin/integrity").expect(403);
+  });
+
+  test("returns the latest flags and refused attempts", async () => {
+    db.getLatestIntegrityFlags.mockResolvedValue([{ userId: "max", score: 0.97, flagged: true, reasons: { text: ["…"] } }]);
+    db.getRecentIntegrityEvents.mockResolvedValue([{ userId: "max", rule: "incident_cooldown" }]);
+    const admin = await asAdmin();
+
+    const res = await admin.get("/api/admin/integrity").expect(200);
+
+    expect(res.body.flags[0].userId).toBe("max");
+    expect(res.body.refused[0].rule).toBe("incident_cooldown");
+  });
+});
