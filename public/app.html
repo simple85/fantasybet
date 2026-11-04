@@ -1966,8 +1966,21 @@
       }
     }
 
+    // The server priced the slip differently (odds moved): show the new prices and let the user decide again.
+    function applyOddsChanges(changes) {
+      for (const c of changes) {
+        const sel = betSlip.find(s => s.matchId === c.matchId && s.betId === c.betId && s.pick === c.pick);
+        if (sel) sel.odd = c.odd;
+      }
+      renderBetSlip();
+      updateSlipSummary();
+      showToast(t("oddsChangedRetry"), "error");
+    }
+
     function translateServerError(err) {
       if (!err) return t("insufficientCredits");
+      if (/delayed|briefly closed|Waiting for updated odds/.test(err)) return t("liveMarketPaused");
+      if (err.includes("no longer available") || err.includes("Live odds not available")) return t("selectionUnavailable");
       if (err.includes("suspended")) return t("oddsSuspended");
       if (err.includes("finished")) return t("matchFinished");
       if (err.includes("Insufficient")) return t("insufficientCredits");
@@ -2007,6 +2020,7 @@
             })
           });
           const data = await res.json();
+          if (data.changes) { applyOddsChanges(data.changes); return; }
           if (data.success) {
             currentUser.credits = data.credits;
             localStorage.setItem("betzone_user", JSON.stringify(currentUser));
@@ -2039,6 +2053,7 @@
             })
           });
           const data = await res.json();
+          if (data.changes) { applyOddsChanges(data.changes); return; }
           if (data.success) {
             currentUser.credits = data.credits;
             localStorage.setItem("betzone_user", JSON.stringify(currentUser));

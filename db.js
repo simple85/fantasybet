@@ -62,6 +62,44 @@ async function initDB() {
       CREATE INDEX IF NOT EXISTS idx_bets_user_id ON bets(user_id);
       CREATE INDEX IF NOT EXISTS idx_bets_status ON bets(status);
       CREATE INDEX IF NOT EXISTS idx_bets_created_at ON bets(created_at DESC);
+
+      -- Live bets the integrity guard refused (see integrity.js); repeated attempts are a signal
+      CREATE TABLE IF NOT EXISTS integrity_events (
+        id BIGSERIAL PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        fixture_id INTEGER,
+        rule TEXT NOT NULL,
+        detail JSONB,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_integrity_events_user ON integrity_events(user_id, created_at DESC);
+
+      -- Written by the offline detection (ml/integrity): one row per user per scoring run
+      CREATE TABLE IF NOT EXISTS integrity_flags (
+        id BIGSERIAL PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        score DOUBLE PRECISION NOT NULL,
+        flagged BOOLEAN NOT NULL,
+        reasons JSONB NOT NULL,
+        features JSONB NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_integrity_flags_run ON integrity_flags(run_id);
+
+      -- One row per bet-builder (LLM) call: tokens, cost and latency
+      CREATE TABLE IF NOT EXISTS bet_builder_usage (
+        id BIGSERIAL PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        model TEXT NOT NULL,
+        input_tokens INTEGER NOT NULL,
+        output_tokens INTEGER NOT NULL,
+        cost_usd DOUBLE PRECISION NOT NULL,
+        latency_ms INTEGER NOT NULL,
+        outcome TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_bet_builder_usage_user ON bet_builder_usage(user_id, created_at DESC);
     `);
     console.log("[DB] Tables ready");
 
@@ -362,8 +400,58 @@ function mapBetRow(r) {
   };
 }
 
+// ══════════════════════════════════════════
+// INTEGRITY & BET BUILDER
+// ══════════════════════════════════════════
+async function logIntegrityEvent({ userId, fixtureId, rule, detail }) {
+  await pool.query(
+    "INSERT INTO integrity_events (user_id, fixture_id, rule, detail) VALUES ($1, $2, $3, $4)",
+    [userId, fixtureId ?? null, rule, JSON.stringify(detail || {})]
+  );
+}
+
+async function getRecentIntegrityEvents(limit = 50) {
+  const { rows } = await pool.query(
+    "SELECT user_id, fixture_id, rule, detail, created_at FROM integrity_events ORDER BY created_at DESC LIMIT $1",
+    [limit]
+  );
+  return rows.map(r => ({ userId: r.user_id, fixtureId: r.fixture_id, rule: r.rule, detail: r.detail, createdAt: r.created_at }));
+}
+
+/** The latest scoring run's results, most suspicious first. */
+async function getLatestIntegrityFlags() {
+  const { rows } = await pool.query(
+    `SELECT run_id, user_id, score, flagged, reasons, features, created_at FROM integrity_flags
+     WHERE run_id = (SELECT run_id FROM integrity_flags ORDER BY created_at DESC LIMIT 1)
+     ORDER BY score DESC`
+  );
+  return rows.map(r => ({ runId: r.run_id, userId: r.user_id, score: r.score, flagged: r.flagged, reasons: r.reasons, features: r.features, createdAt: r.created_at }));
+}
+
+async function logBetBuilderUsage({ userId, model, inputTokens, outputTokens, costUsd, latencyMs, outcome }) {
+  await pool.query(
+    `INSERT INTO bet_builder_usage (user_id, model, input_tokens, output_tokens, cost_usd, latency_ms, outcome)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+    [userId, model, inputTokens, outputTokens, costUsd, latencyMs, outcome || null]
+  );
+}
+
+/** How many bet-builder model calls a user made in the last 24 hours (for the daily limit). */
+async function betBuilderCallsLastDay(userId) {
+  const { rows } = await pool.query(
+    "SELECT COUNT(*)::int AS n FROM bet_builder_usage WHERE user_id = $1 AND created_at > NOW() - INTERVAL '24 hours'",
+    [userId]
+  );
+  return rows[0].n;
+}
+
 // ── Exports ──
 module.exports = {
+  logIntegrityEvent,
+  getRecentIntegrityEvents,
+  getLatestIntegrityFlags,
+  logBetBuilderUsage,
+  betBuilderCallsLastDay,
   pool,
   initDB,
   getUsers,

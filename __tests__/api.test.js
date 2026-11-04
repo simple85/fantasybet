@@ -4,6 +4,7 @@ const request = require("supertest");
 const db = require("../db");
 const auth = require("../auth");
 const { app, settleBets, __setState } = require("../server");
+const integrity = require("../integrity");
 
 const user = { id: "ali", password: auth.hashPassword("ali123"), displayName: "Ali Yilmaz", credits: 100 };
 
@@ -247,11 +248,22 @@ describe("POST /api/users", () => {
   });
 });
 
+// A pre-match fixture with bookmaker odds, as the daily refresh stores it
+const prematch = (id, odd = "2.00") => ({
+  id,
+  status: "Not Started",
+  statusShort: "NS",
+  home: { name: "Home FC" },
+  away: { name: "Away FC" },
+  bets: [{ id: 1, name: "Match Winner", values: [{ value: "Home", odd }, { value: "Draw", odd: "3.40" }, { value: "Away", odd: "3.80" }] }],
+});
+
 describe("POST /api/bets", () => {
   const selection = { matchId: 1, betId: 1, pick: "Home", odd: 2 };
   const body = { selections: [selection], stake: 10, totalOdds: 2, possibleWin: 20 };
   let agent;
   beforeEach(async () => {
+    __setState({ matches: [prematch(1), prematch(2)] });
     agent = await loginAs("ali", "ali123");
   });
 
@@ -283,10 +295,11 @@ describe("POST /api/bets", () => {
     expect(db.placeBetTransaction).not.toHaveBeenCalled();
   });
 
-  test.each([[0.5], [-2], ["x"]])("rejects odds %p", async (odd) => {
+  test.each([[0.5], [-2], ["x"]])("does not accept made-up odds %p", async (odd) => {
     const res = await agent.post("/api/bets").send({ ...body, selections: [{ ...selection, odd }] });
 
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(409);
+    expect(db.placeBetTransaction).not.toHaveBeenCalled();
   });
 
   test("admins cannot place bets", async () => {
@@ -333,7 +346,7 @@ describe("POST /api/bets", () => {
 
   test("rejects suspended live odds", async () => {
     __setState({
-      matches: [{ id: 1, statusShort: "2H", status: "Second Half" }],
+      matches: [{ ...prematch(1), statusShort: "2H", status: "Second Half" }],
       currentLiveOdds: [{ fixtureId: 1, odds: [{ id: 1, values: [{ value: "Home", suspended: true }] }] }],
     });
 
@@ -346,6 +359,120 @@ describe("POST /api/bets", () => {
     const res = await agent.post("/api/bets").send({});
 
     expect(res.status).toBe(400);
+  });
+});
+
+describe("POST /api/bets — server-side pricing", () => {
+  let agent;
+  beforeEach(async () => {
+    __setState({ matches: [prematch(1, "2.10")] });
+    agent = await loginAs("ali", "ali123");
+  });
+
+  test("refuses a bet on the old price and returns the current odds", async () => {
+    const res = await agent.post("/api/bets").send({ selections: [{ matchId: 1, betId: 1, pick: "Home", odd: 2 }], stake: 10, mode: "combined" });
+
+    expect(res.status).toBe(409);
+    expect(res.body).toEqual({ success: false, error: "Odds changed", changes: [{ matchId: 1, betId: 1, pick: "Home", odd: 2.1 }] });
+    expect(db.placeBetTransaction).not.toHaveBeenCalled();
+  });
+
+  test("stores only server-side data in the bet, not what the browser sent", async () => {
+    db.placeBetTransaction.mockResolvedValue({ credits: 90 });
+
+    await agent.post("/api/bets").send({
+      selections: [{ matchId: 1, betId: 1, pick: "Home", odd: 2.1, marketLabel: "Fake market", result: "won", matchLabel: "<script>" }],
+      stake: 10,
+      mode: "combined",
+    }).expect(200);
+
+    const bet = db.placeBetTransaction.mock.calls[0][2];
+    expect(bet.selections).toEqual([{ matchId: 1, matchLabel: "Home FC - Away FC", betId: 1, marketLabel: "Match Winner", pick: "Home", pickLabel: "Home", odd: 2.1 }]);
+    expect(bet.possibleWin).toBe(21);
+  });
+
+  test.each([
+    ["an unknown match", { matchId: 99, betId: 1, pick: "Home", odd: 2.1 }, "Unknown match"],
+    ["an unknown market", { matchId: 1, betId: 77, pick: "Home", odd: 2.1 }, "Selection no longer available"],
+    ["an unknown pick", { matchId: 1, betId: 1, pick: "Banana", odd: 2.1 }, "Selection no longer available"],
+  ])("rejects %s", async (_, sel, error) => {
+    const res = await agent.post("/api/bets").send({ selections: [sel], stake: 10, mode: "combined" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe(error);
+  });
+});
+
+describe("POST /api/bets — live integrity guard", () => {
+  const liveMatch = { ...prematch(5), status: "Second Half", statusShort: "2H", elapsed: 62, score: { home: 1, away: 0 } };
+  const liveOdds = (odd = "1.40") => [{ fixtureId: 5, odds: [{ id: 59, name: "Fulltime Result", values: [{ value: "Home", odd, suspended: false }] }] }];
+  const liveBet = (odd = 1.4) => ({ selections: [{ matchId: 5, betId: 59, pick: "Home", odd }], stake: 10, mode: "combined" });
+  let agent;
+  let now;
+  beforeEach(async () => {
+    integrity.__reset();
+    now = Date.now();
+    __setState({ matches: [liveMatch], currentLiveOdds: liveOdds() });
+    agent = await loginAs("ali", "ali123");
+  });
+
+  test("never prices a live match from the pre-match odds", async () => {
+    __setState({ currentLiveOdds: [] });
+    integrity.noteOddsTick(now);
+
+    const res = await agent.post("/api/bets").send({ selections: [{ matchId: 5, betId: 1, pick: "Home", odd: 2 }], stake: 10, mode: "combined" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Live odds not available for this match");
+  });
+
+  test("refuses live bets while the odds feed is delayed, and logs the attempt", async () => {
+    integrity.noteOddsTick(now - integrity.FEED_MAX_AGE_MS - 1000);
+
+    const res = await agent.post("/api/bets").send(liveBet());
+
+    expect(res.status).toBe(400);
+    expect(res.body.rule).toBe("feed_delayed");
+    expect(db.logIntegrityEvent).toHaveBeenCalledWith(expect.objectContaining({ userId: "ali", fixtureId: 5, rule: "feed_delayed" }));
+  });
+
+  test("closes the market right after a goal", async () => {
+    integrity.noteOddsTick(now);
+    integrity.noteOddsChanged(5, now - 60_000);
+    integrity.noteLiveUpdate(5, { score: { home: 0, away: 0 }, elapsed: 60 }, now - 20_000);
+    integrity.noteLiveUpdate(5, { score: { home: 1, away: 0 }, elapsed: 61 }, now - 5_000);
+
+    const res = await agent.post("/api/bets").send(liveBet());
+
+    expect(res.body.rule).toBe("incident_cooldown");
+    expect(db.placeBetTransaction).not.toHaveBeenCalled();
+  });
+
+  test("keeps it closed until the odds have moved since the goal", async () => {
+    integrity.noteOddsTick(now);
+    integrity.noteOddsChanged(5, now - 120_000);
+    integrity.noteLiveUpdate(5, { score: { home: 0, away: 0 } }, now - 100_000);
+    integrity.noteLiveUpdate(5, { score: { home: 1, away: 0 } }, now - 60_000);
+
+    const res = await agent.post("/api/bets").send(liveBet());
+
+    expect(res.body.rule).toBe("odds_not_updated");
+  });
+
+  test("accepts the bet once fresh odds arrived, with a timing snapshot", async () => {
+    db.placeBetTransaction.mockResolvedValue({ credits: 90 });
+    integrity.noteOddsTick(now);
+    integrity.noteLiveUpdate(5, { score: { home: 0, away: 0 } }, now - 100_000);
+    integrity.noteLiveUpdate(5, { score: { home: 1, away: 0 } }, now - 60_000);
+    integrity.noteOddsChanged(5, now - 10_000);
+
+    await agent.post("/api/bets").send(liveBet()).expect(200);
+
+    const sel = db.placeBetTransaction.mock.calls[0][2].selections[0];
+    expect(sel).toMatchObject({ live: true, odd: 1.4, marketLabel: "Fulltime Result" });
+    expect(sel.context).toMatchObject({ minute: 62, score: { home: 1, away: 0 }, lastIncident: "goal" });
+    expect(sel.context.msSinceIncident).toBeGreaterThanOrEqual(60_000);
+    expect(sel.context.oddsAgeMs).toBeGreaterThanOrEqual(10_000);
   });
 });
 

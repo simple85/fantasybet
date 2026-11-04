@@ -36,6 +36,8 @@ const {
 } = require("./fetch-data");
 const db = require("./db");
 const auth = require("./auth");
+const pricing = require("./pricing");
+const integrity = require("./integrity");
 
 const app = express();
 const PORT = process.env.PORT || 8000;
@@ -266,25 +268,52 @@ app.post("/api/bets", auth.requireUser, async (req, res) => {
     return res.status(400).json({ success: false, error: "Missing fields" });
   }
 
-  // Reject bets on finished matches or suspended/stale odds
+  // Price every selection from the server's odds; the browser's odds only tell us what the user saw.
+  const priced = [];
+  const changes = [];
+  const now = Date.now();
   for (const sel of selections) {
-    const match = matches.find(m => m.id === sel.matchId);
-    if (match && (FINISHED_SHORT.has(match.statusShort) || SETTLED_STATUSES_BET.has(match.status))) {
+    const match = matches.find(m => m.id === Number(sel && sel.matchId));
+    if (!match) return res.status(400).json({ success: false, error: "Unknown match" });
+    if (FINISHED_SHORT.has(match.statusShort) || SETTLED_STATUSES_BET.has(match.status)) {
       return res.status(400).json({ success: false, error: "Match already finished: " + (match.home?.name || sel.matchId) + " vs " + (match.away?.name || "") });
     }
-    if (match && LIVE_SHORT.has(match.statusShort)) {
-      const liveItem = currentLiveOdds.find(o => o.fixtureId === sel.matchId);
-      if (liveItem) {
-        const liveBet = (liveItem.odds || []).find(b => b.id === sel.betId);
-        const liveVal = liveBet && (liveBet.values || []).find(v => v.value === sel.pick);
-        if (!liveVal || liveVal.suspended) {
-          return res.status(400).json({ success: false, error: "Odds suspended for this selection" });
-        }
+    const live = LIVE_SHORT.has(match.statusShort);
+    const liveItem = live ? currentLiveOdds.find(o => o.fixtureId === match.id) : null;
+    const price = pricing.priceSelection(sel, { match, liveItem, live });
+    if (price.error) return res.status(400).json({ success: false, error: price.error });
+
+    let context;
+    if (live) {
+      const check = integrity.checkLiveBet(match.id, match, now);
+      if (!check.ok) {
+        Promise.resolve(db.logIntegrityEvent({ userId, fixtureId: match.id, rule: check.rule, detail: { ...check.snapshot, betId: Number(sel.betId), pick: sel.pick } }))
+          .catch(e => console.error("[INTEGRITY] log error:", e.message));
+        return res.status(400).json({ success: false, error: check.error, rule: check.rule });
       }
+      context = check.snapshot;
     }
+
+    if (!pricing.samePrice(price.odd, sel.odd)) {
+      changes.push({ matchId: match.id, betId: Number(sel.betId), pick: price.pick, odd: price.odd });
+    }
+    // Only trusted fields are stored: nothing else the browser sent ends up in the bet.
+    priced.push({
+      matchId: match.id,
+      matchLabel: (match.home?.name || "") + " - " + (match.away?.name || ""),
+      betId: Number(sel.betId),
+      marketLabel: price.marketName,
+      pick: price.pick,
+      pickLabel: price.pick,
+      odd: price.odd,
+      ...(live ? { live: true, context } : {}),
+    });
+  }
+  if (changes.length > 0) {
+    return res.status(409).json({ success: false, error: "Odds changed", changes });
   }
 
-  const quote = quoteBet({ selections, stake, mode });
+  const quote = quoteBet({ selections: priced, stake, mode });
   if (quote.error) return res.status(400).json({ success: false, error: quote.error });
 
   const bet = {
@@ -292,7 +321,7 @@ app.post("/api/bets", auth.requireUser, async (req, res) => {
     userId,
     timestamp: new Date().toISOString(),
     mode: quote.mode,
-    selections,
+    selections: priced,
     stake: quote.stake,
     totalOdds: quote.totalOdds,
     possibleWin: quote.possibleWin,
@@ -1029,6 +1058,7 @@ async function tickLiveOdds() {
   try {
     const odds = await fetchLiveOdds();
     const now = Date.now();
+    integrity.noteOddsTick(now);
 
     // Check each fixture for staleness
     for (const item of odds) {
@@ -1039,9 +1069,11 @@ async function tickLiveOdds() {
       if (!prev) {
         // First time seeing this fixture
         _oddsFingerprints[fid] = { hash, lastChanged: now };
+        integrity.noteOddsChanged(fid, now);
       } else if (prev.hash !== hash) {
         // Odds changed — update timestamp
         _oddsFingerprints[fid] = { hash, lastChanged: now };
+        integrity.noteOddsChanged(fid, now);
       }
       // else: same hash, keep old lastChanged
 
@@ -1083,9 +1115,22 @@ async function tickLiveFixtures() {
     const updates = [];
     const newlyFinished = [];
 
+    const now = Date.now();
     for (const live of liveData) {
       const match = matches.find(m => m.id === live.id);
       if (!match) continue;
+
+      // A goal or red card makes the current live prices wrong until the feed reacts:
+      // suspend this match's live odds right away (the integrity guard blocks bets meanwhile).
+      const incident = integrity.noteLiveUpdate(live.id, live, now);
+      if (incident) {
+        console.log(`[INTEGRITY] ${incident.kind} in ${live.id} at ${live.elapsed}' — live markets paused`);
+        const liveItem = currentLiveOdds.find(o => o.fixtureId === live.id);
+        if (liveItem) {
+          for (const bet of liveItem.odds || []) for (const v of bet.values || []) v.suspended = true;
+          broadcast("liveOdds", currentLiveOdds);
+        }
+      }
 
       const wasNotFinished = !FINISHED_SHORT.has(match.statusShort);
       const isNowFinished = FINISHED_SHORT.has(live.statusShort);
@@ -1105,8 +1150,10 @@ async function tickLiveFixtures() {
         score: live.score,
       });
 
+      if (live.redCards) match.redCards = live.redCards;
       if (wasNotFinished && isNowFinished) {
         newlyFinished.push(match);
+        integrity.forgetFixture(match.id);
       }
     }
 
