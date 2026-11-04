@@ -3,7 +3,8 @@
 // ============================================
 // SSE-powered live odds & scores. No frontend polling.
 //
-// Data loops (server-side):
+// Data loops (server-side), full mode — paid plans with 30,000+ API requests a day.
+// Smaller plans (the free one included) run the budget engine instead: see quota.js.
 //   Live odds:       fetchLiveOdds()          every 5s    (HIGHEST PRIORITY)
 //   Live scores:     fetchLiveFixtures()      every 15s
 //   Pre-match odds:  fetchPreMatchOdds(id)    every 2h per fixture
@@ -30,10 +31,13 @@ const {
   fetchPreMatchOdds,
   fetchFixtureStatistics,
   fetchFixtureEvents,
+  fetchFixturesByIds,
+  setQuotaHooks,
   formatDate,
   sleep,
   isApiKeyConfigured,
 } = require("./fetch-data");
+const quota = require("./quota");
 const db = require("./db");
 const auth = require("./auth");
 const pricing = require("./pricing");
@@ -57,6 +61,22 @@ const _oddsFingerprints = {};  // { fixtureId: { hash: string, lastChanged: epoc
 let _liveFixturesBusy = false;
 let _preMatchBusy = false;
 let _dailyBusy = false;
+
+// ── API quota (see quota.js) ──
+// API_FOOTBALL_DAILY_LIMIT: requests per day on your plan (free: 100). Below 30,000 the server
+// runs in budget mode; the API's rate-limit headers correct the number once requests flow.
+const API_DAILY_LIMIT = Number(process.env.API_FOOTBALL_DAILY_LIMIT) || 100;
+const DATA_MODE = quota.modeFor(API_DAILY_LIMIT);
+const FOLLOWED_LEAGUES = quota.parseLeagues(process.env.API_FOOTBALL_LEAGUES);
+const apiBudget = quota.createBudget({ dailyLimit: API_DAILY_LIMIT, reserve: DATA_MODE === "budget" ? 5 : 0 });
+const _preMatchFetchedAt = new Map();  // matchId → when its pre-match odds were last fetched
+const _dataAttemptAt = new Map();      // matchId → last attempt to fetch missing stats/events
+const DATA_RETRY_MS = 30 * 60 * 1000;
+// Requests per minute the plan allows (free: 10); budget mode spaces requests to stay under it
+const API_PER_MINUTE = Number(process.env.API_FOOTBALL_PER_MINUTE) || 10;
+const PREMATCH_PER_TICK = 5;           // budget mode: a few odds requests per 20 s tick
+let nextLivePollAt = 0;
+let liveIntervalMs = null;
 
 // Status sets
 const LIVE_SHORT = new Set(["1H", "HT", "2H", "ET", "BT", "P", "INT", "LIVE"]);
@@ -292,7 +312,7 @@ app.post("/api/bets", auth.requireUser, async (req, res) => {
     }
     const live = LIVE_SHORT.has(match.statusShort);
     const liveItem = live ? currentLiveOdds.find(o => o.fixtureId === match.id) : null;
-    const price = pricing.priceSelection(sel, { match, liveItem, live });
+    const price = pricing.priceSelection(sel, { match, liveItem, live, now });
     if (price.error) return res.status(400).json({ success: false, error: price.error });
 
     let context;
@@ -446,9 +466,17 @@ app.get("/api/status", (req, res) => {
     liveCount,
     sseClients: sseClients.length,
     apiKeyConfigured: isApiKeyConfigured(),
+    dataPlan: isApiKeyConfigured()
+      ? { mode: DATA_MODE, liveOdds: DATA_MODE === "full", liveIntervalSec: dataPlanStatus().liveIntervalSec }
+      : { mode: "mock", liveOdds: false, liveIntervalSec: null },
     lastDailyRefresh: lastDailyRefresh ? new Date(lastDailyRefresh).toISOString() : null,
     lastPreMatchOdds: lastPreMatchOdds ? new Date(lastPreMatchOdds).toISOString() : null,
   });
+});
+
+// API request usage today (admin only)
+app.get("/api/admin/data-plan", auth.requireAdmin, (req, res) => {
+  res.json({ ...dataPlanStatus(), apiKeyConfigured: isApiKeyConfigured() });
 });
 
 // ══════════════════════════════════════════
@@ -1035,28 +1063,7 @@ async function _settleBetsInner() {
       }
     }
   }
-  for (const mid of finishedNeedData) {
-    const match = matches.find(m => m.id === mid);
-    if (!match) continue;
-    if (!match.stats) {
-      try {
-        const stats = await fetchFixtureStatistics(mid);
-        if (stats && stats.home && stats.away) {
-          match.stats = stats;
-          console.log(`[SETTLE] Fetched missing stats for ${mid}`);
-        }
-      } catch (e) { console.error(`[SETTLE] Stats fetch failed for ${mid}: ${e.message}`); }
-    }
-    if (!match.events) {
-      try {
-        const events = await fetchFixtureEvents(mid);
-        if (events) {
-          match.events = events;
-          console.log(`[SETTLE] Fetched events for ${mid}: ${events.goals.length} goals`);
-        }
-      } catch (e) { console.error(`[SETTLE] Events fetch failed for ${mid}: ${e.message}`); }
-    }
-  }
+  await fetchMissingMatchData([...finishedNeedData]);
 
   let settled = 0;
 
@@ -1189,99 +1196,147 @@ async function tickLiveFixtures() {
   if (_liveFixturesBusy) return;
   _liveFixturesBusy = true;
   try {
-    const liveData = await fetchLiveFixtures();
-    const updates = [];
-    const newlyFinished = [];
+    // ?live=all lists only matches in play, so a match missing from it is taken as finished
+    await applyLiveUpdates(await fetchLiveFixtures(), { complete: true });
+  } catch (e) {
+    console.error("[LIVE-FIXTURES] Error:", e.message);
+  } finally {
+    _liveFixturesBusy = false;
+  }
+}
 
-    const now = Date.now();
-    for (const live of liveData) {
-      const match = matches.find(m => m.id === live.id);
-      if (!match) continue;
+/**
+ * Applies fresh fixture data (status, score, red cards; with ?ids= also events and stats) to
+ * the in-memory matches, broadcasts it, and settles bets on matches that just finished.
+ *  complete: true when liveData is the full ?live=all list, so live matches missing from it
+ *            have ended. Budget mode asks by id and sees the final status itself.
+ */
+async function applyLiveUpdates(liveData, { complete = false } = {}) {
+  const updates = [];
+  const newlyFinished = [];
+  const now = Date.now();
 
-      // A goal or red card makes the current live prices wrong until the feed reacts:
-      // suspend this match's live odds right away (the integrity guard blocks bets meanwhile).
-      const incident = integrity.noteLiveUpdate(live.id, live, now);
-      if (incident) {
-        console.log(`[INTEGRITY] ${incident.kind} in ${live.id} at ${live.elapsed}' — live markets paused`);
-        const liveItem = currentLiveOdds.find(o => o.fixtureId === live.id);
-        if (liveItem) {
-          for (const bet of liveItem.odds || []) for (const v of bet.values || []) v.suspended = true;
-          broadcast("liveOdds", currentLiveOdds);
-        }
-      }
+  for (const live of liveData) {
+    const match = matches.find(m => m.id === live.id);
+    if (!match) continue;
 
-      const wasNotFinished = !FINISHED_SHORT.has(match.statusShort);
-      const isNowFinished = FINISHED_SHORT.has(live.statusShort);
-
-      // Update in-memory match data
-      match.status = live.status;
-      match.statusShort = live.statusShort;
-      match.elapsed = live.elapsed;
-      if (live.score) match.score = live.score;
-      if (live.htScore) match.htScore = live.htScore;
-
-      updates.push({
-        id: live.id,
-        status: live.status,
-        statusShort: live.statusShort,
-        elapsed: live.elapsed,
-        score: live.score,
-      });
-
-      if (live.redCards) match.redCards = live.redCards;
-      if (wasNotFinished && isNowFinished) {
-        newlyFinished.push(match);
-        integrity.forgetFixture(match.id);
+    // A goal or red card makes the current live prices wrong until the feed reacts:
+    // suspend this match's live odds right away (the integrity guard blocks bets meanwhile).
+    const incident = integrity.noteLiveUpdate(live.id, live, now);
+    if (incident) {
+      console.log(`[INTEGRITY] ${incident.kind} in ${live.id} at ${live.elapsed}' — live markets paused`);
+      const liveItem = currentLiveOdds.find(o => o.fixtureId === live.id);
+      if (liveItem) {
+        for (const bet of liveItem.odds || []) for (const v of bet.values || []) v.suspended = true;
+        broadcast("liveOdds", currentLiveOdds);
       }
     }
 
+    const wasNotFinished = !FINISHED_SHORT.has(match.statusShort);
+    const isNowFinished = FINISHED_SHORT.has(live.statusShort);
+    const changed = match.statusShort !== live.statusShort || match.elapsed !== live.elapsed ||
+      JSON.stringify(match.score) !== JSON.stringify(live.score);
+
+    match.status = live.status;
+    match.statusShort = live.statusShort;
+    match.elapsed = live.elapsed;
+    if (live.score) match.score = live.score;
+    if (live.htScore) match.htScore = live.htScore;
+    if (live.redCards) match.redCards = live.redCards;
+    if (live.events) match.events = live.events;
+    if (live.stats) match.stats = live.stats;
+
+    if (complete || changed) {
+      updates.push({ id: live.id, status: live.status, statusShort: live.statusShort, elapsed: live.elapsed, score: live.score });
+    }
+    if (wasNotFinished && isNowFinished) {
+      newlyFinished.push(match);
+      integrity.forgetFixture(match.id);
+    }
+  }
+
+  if (complete) {
     // Matches we thought were live but aren't in the response anymore → mark as finished
     for (const match of matches) {
       if (LIVE_SHORT.has(match.statusShort) && !liveData.find(l => l.id === match.id)) {
         console.log(`[ENGINE] Match ${match.id} disappeared from live feed — marking as FT`);
         match.status = "Match Finished";
         match.statusShort = "FT";
-        updates.push({
-          id: match.id,
-          status: match.status,
-          statusShort: match.statusShort,
-          elapsed: 90,
-          score: match.score,
-        });
+        updates.push({ id: match.id, status: match.status, statusShort: match.statusShort, elapsed: 90, score: match.score });
         newlyFinished.push(match);
       }
     }
+  }
 
-    if (updates.length > 0) {
-      broadcast("liveScores", updates);
-      db.saveMatches(matches).catch(e => console.error("[DB] saveMatches error:", e.message));
-      lastMatchUpdate = new Date().toISOString();
+  if (updates.length > 0) {
+    broadcast("liveScores", updates);
+    db.saveMatches(matches).catch(e => console.error("[DB] saveMatches error:", e.message));
+    lastMatchUpdate = new Date().toISOString();
+  }
+
+  if (newlyFinished.length > 0) {
+    console.log(`[ENGINE] ${newlyFinished.length} match(es) just finished: ${newlyFinished.map(m => m.id).join(", ")}`);
+    await fetchMissingMatchData(newlyFinished.filter(m => !m.stats).map(m => m.id), { statsOnly: true });
+    db.saveMatches(matches).catch(e => console.error("[DB] saveMatches error:", e.message));
+    const result = await settleBets();
+    if (result.settled > 0) {
+      broadcast("settled", { settled: result.settled, time: new Date().toISOString() });
     }
+  }
+  return { updates: updates.length, finished: newlyFinished.length };
+}
 
-    // Fetch statistics for newly finished matches, then settle
-    if (newlyFinished.length > 0) {
-      console.log(`[ENGINE] ${newlyFinished.length} match(es) just finished: ${newlyFinished.map(m => m.id).join(", ")}`);
-      for (const match of newlyFinished) {
-        try {
-          const stats = await fetchFixtureStatistics(match.id);
-          if (stats && stats.home && stats.away) {
-            match.stats = stats;
-            console.log(`[STATS] ${match.id}: corners ${stats.home.corners}-${stats.away.corners}, cards ${stats.home.totalCards}-${stats.away.totalCards}, shots ${stats.home.shotsOnGoal}-${stats.away.shotsOnGoal}`);
-          }
-        } catch (e) {
-          console.error(`[STATS] Failed for ${match.id}: ${e.message}`);
+/**
+ * Fetches statistics and goal events that settling a finished match needs. Each match is tried
+ * at most every 30 minutes: smaller leagues often have no statistics, and asking again every
+ * minute would burn the daily quota for nothing. Budget mode gets both for up to 20 matches in
+ * one ?ids= call; full mode asks per match.
+ */
+async function fetchMissingMatchData(ids, { statsOnly = false } = {}) {
+  const now = Date.now();
+  const due = ids.filter(id => now - (_dataAttemptAt.get(id) || 0) >= DATA_RETRY_MS);
+  if (due.length === 0) return;
+  for (const id of due) _dataAttemptAt.set(id, now);
+
+  if (DATA_MODE === "budget") {
+    for (const batch of quota.idBatches(due)) {
+      try {
+        for (const item of await fetchFixturesByIds(batch, { purpose: "settlement" })) {
+          const match = matches.find(m => m.id === item.id);
+          if (!match) continue;
+          if (item.stats) match.stats = item.stats;
+          if (item.events) match.events = item.events;
+          if (item.score) match.score = item.score;
+          if (item.htScore) match.htScore = item.htScore;
         }
-      }
-      db.saveMatches(matches).catch(e => console.error("[DB] saveMatches error:", e.message));
-      const result = await settleBets();
-      if (result.settled > 0) {
-        broadcast("settled", { settled: result.settled, time: new Date().toISOString() });
+      } catch (e) {
+        console.error(`[SETTLE] Data fetch failed for ${batch.join(",")}: ${e.message}`);
       }
     }
-  } catch (e) {
-    console.error("[LIVE-FIXTURES] Error:", e.message);
-  } finally {
-    _liveFixturesBusy = false;
+    return;
+  }
+
+  for (const mid of due) {
+    const match = matches.find(m => m.id === mid);
+    if (!match) continue;
+    if (!match.stats) {
+      try {
+        const stats = await fetchFixtureStatistics(mid);
+        if (stats && stats.home && stats.away) {
+          match.stats = stats;
+          console.log(`[STATS] ${mid}: corners ${stats.home.corners}-${stats.away.corners}, cards ${stats.home.totalCards}-${stats.away.totalCards}`);
+        }
+      } catch (e) { console.error(`[SETTLE] Stats fetch failed for ${mid}: ${e.message}`); }
+    }
+    if (!statsOnly && !match.events) {
+      try {
+        const events = await fetchFixtureEvents(mid);
+        if (events) {
+          match.events = events;
+          console.log(`[SETTLE] Fetched events for ${mid}: ${events.goals.length} goals`);
+        }
+      } catch (e) { console.error(`[SETTLE] Events fetch failed for ${mid}: ${e.message}`); }
+    }
   }
 }
 
@@ -1294,24 +1349,33 @@ async function dailyRefresh() {
     const yesterday = new Date(now); yesterday.setDate(yesterday.getDate() - 1);
     const tomorrow = new Date(now); tomorrow.setDate(tomorrow.getDate() + 1);
     const dayAfter = new Date(now); dayAfter.setDate(dayAfter.getDate() + 2);
+    // Budget mode: 3 days (yesterday keeps late matches settling), followed leagues only
+    const last = DATA_MODE === "budget" ? tomorrow : dayAfter;
 
-    console.log(`[DAILY] Fetching fixtures ${formatDate(yesterday)} to ${formatDate(dayAfter)}...`);
-    const newFixtures = await fetchFixturesByRange(formatDate(yesterday), formatDate(dayAfter));
+    console.log(`[DAILY] Fetching fixtures ${formatDate(yesterday)} to ${formatDate(last)}...`);
+    let newFixtures = await fetchFixturesByRange(formatDate(yesterday), formatDate(last));
+    if (DATA_MODE === "budget") newFixtures = newFixtures.filter(f => FOLLOWED_LEAGUES.has(f.league?.id));
+    const justFinished = [];
 
     // Merge: preserve live scores/status and existing odds from memory
     for (const nf of newFixtures) {
       const existing = matches.find(m => m.id === nf.id);
       if (existing) {
-        // Keep live data if match is currently in play
-        if (LIVE_SHORT.has(existing.statusShort)) {
+        // Keep live data if match is currently in play — unless the list already has its final
+        // status (budget mode may have missed the final whistle)
+        if (LIVE_SHORT.has(existing.statusShort) && !SKIP_ODDS_SHORT.has(nf.statusShort)) {
           nf.status = existing.status;
           nf.statusShort = existing.statusShort;
           nf.elapsed = existing.elapsed;
           nf.score = existing.score;
           nf.htScore = existing.htScore;
         }
-        // Preserve halftime score from memory if available
+        // Preserve halftime score, events and stats from memory if available
         if (existing.htScore && !nf.htScore) nf.htScore = existing.htScore;
+        if (existing.events) nf.events = existing.events;
+        if (existing.stats) nf.stats = existing.stats;
+        if (existing.redCards) nf.redCards = existing.redCards;
+        if (!FINISHED_SHORT.has(existing.statusShort) && FINISHED_SHORT.has(nf.statusShort)) justFinished.push(nf.id);
         // Keep existing pre-match odds if new fixture has none
         if ((!nf.bets || nf.bets.length === 0) && existing.bets && existing.bets.length > 0) {
           nf.bets = existing.bets;
@@ -1326,6 +1390,8 @@ async function dailyRefresh() {
 
     console.log(`[DAILY] ${matches.length} fixtures loaded`);
     broadcast("fixturesUpdate", { count: matches.length, time: lastMatchUpdate });
+    for (const id of justFinished) integrity.forgetFixture(id);
+    if (justFinished.length > 0) settleBets().catch(e => console.error("[SETTLE] Error:", e.message));
   } catch (e) {
     console.error("[DAILY] Error:", e.message);
   } finally {
@@ -1338,23 +1404,33 @@ async function refreshPreMatchOdds() {
   if (_preMatchBusy) return;
   _preMatchBusy = true;
   try {
-    const eligible = matches.filter(m =>
+    let eligible = matches.filter(m =>
       !LIVE_SHORT.has(m.statusShort) &&
       !SKIP_ODDS_SHORT.has(m.statusShort)
     );
+    if (DATA_MODE === "budget") {
+      const plan = quota.preMatchPlan({
+        matches: eligible, now: Date.now(), fetchedAt: _preMatchFetchedAt,
+        budget: apiBudget.spendable(), limit: apiBudget.limit, spentToday: apiBudget.spentByPurpose().preMatch || 0,
+      });
+      eligible = plan.slice(0, PREMATCH_PER_TICK).map(id => matches.find(m => m.id === id));
+      if (eligible.length === 0) return;
+    }
 
     console.log(`[PRE-MATCH] Updating odds for ${eligible.length} fixtures...`);
     let updated = 0;
 
     for (const match of eligible) {
       try {
+        if (!apiBudget.spendable() && DATA_MODE === "budget") break;
         const bets = await fetchPreMatchOdds(match.id);
+        _preMatchFetchedAt.set(match.id, Date.now());
         if (bets.length > 0) {
           match.bets = bets;
           updated++;
         }
-        // Small delay between calls to stay well within rate limits
-        await sleep(350);
+        // Small delay between calls to stay well within rate limits (budget mode spaces requests itself)
+        if (DATA_MODE !== "budget") await sleep(350);
       } catch (e) {
         console.error(`[PRE-MATCH] Fixture ${match.id}: ${e.message}`);
       }
@@ -1376,6 +1452,109 @@ async function refreshPreMatchOdds() {
 }
 
 // ══════════════════════════════════════════
+// BUDGET ENGINE — small API plans (see quota.js)
+// ══════════════════════════════════════════
+function installQuotaHooks() {
+  setQuotaHooks({
+    gate: (endpoint, params, meta) => {
+      const purpose = meta.purpose || quota.purposeOf(endpoint, params);
+      // Settling finished matches may dip into the reserve; planned polling may not.
+      const ok = apiBudget.tryConsume(1, purpose, { urgent: purpose === "settlement" });
+      if (!ok) console.warn(`[QUOTA] ${purpose} request skipped — ${apiBudget.used()}/${apiBudget.limit} used today`);
+      return ok;
+    },
+    observe: (h) => apiBudget.sync(h),
+    // a little under the per-minute limit, so other short bursts still fit
+    spacingMs: DATA_MODE === "budget" ? Math.ceil(60000 / Math.max(1, API_PER_MINUTE - 1)) : 0,
+  });
+}
+
+let _budgetBusy = false;
+let _quotaWarned = null;
+
+/** One step of the budget engine: runs every 20 s, spends requests only when something is due. */
+async function budgetTick() {
+  if (_budgetBusy) return;
+  _budgetBusy = true;
+  try {
+    const now = Date.now();
+
+    // 1. Fixture list, once per UTC day (3 requests)
+    if (quota.utcDay(now) !== quota.utcDay(lastDailyRefresh)) await dailyRefresh();
+
+    // 2. Pre-match odds: what users bet on, so they come before live scores
+    await refreshPreMatchOdds();
+
+    // 3. Live scores for followed matches that may be in play, paced to last the day
+    const followed = quota.tracked(matches, FOLLOWED_LEAGUES);
+    const watching = quota.watchList(followed, now);
+    if (watching.length === 0 || now < nextLivePollAt) return;
+
+    const liveBudget = apiBudget.spendable() - quota.preMatchStillNeeded({
+      matches: followed, now, fetchedAt: _preMatchFetchedAt,
+      limit: apiBudget.limit, spentToday: apiBudget.spentByPurpose().preMatch || 0,
+    });
+    liveIntervalMs = quota.liveIntervalMs({ matches: followed, now, budget: liveBudget });
+    if (liveIntervalMs === null) {
+      if (_quotaWarned !== quota.utcDay(now)) {
+        _quotaWarned = quota.utcDay(now);
+        console.warn("[QUOTA] Daily requests used up — live scores pause until 00:00 UTC; results settle with the next fixture list");
+      }
+      nextLivePollAt = quota.dayEnd(now);
+      return;
+    }
+
+    for (const batch of quota.idBatches(watching.map(m => m.id))) {
+      try {
+        await applyLiveUpdates(await fetchFixturesByIds(batch));
+      } catch (e) {
+        console.error("[LIVE-FIXTURES] Error:", e.message);
+      }
+    }
+    nextLivePollAt = now + liveIntervalMs;
+    console.log(`[QUOTA] ${watching.length} match(es) watched, next poll in ${Math.round(liveIntervalMs / 1000)}s — ${apiBudget.used()}/${apiBudget.limit} requests used today`);
+  } catch (e) {
+    console.error("[ENGINE] Budget tick error:", e.message);
+  } finally {
+    _budgetBusy = false;
+  }
+}
+
+function startBudgetEngine() {
+  console.log(`[ENGINE] Budget mode: ${apiBudget.limit} API requests a day`);
+  console.log(`  Leagues:         ${[...FOLLOWED_LEAGUES].join(", ")}`);
+  console.log("  Fixtures:        once a day (3 requests)");
+  console.log(`  Pre-match odds:  up to ${Math.round(quota.PREMATCH_SHARE * 100)}% of the quota, soonest kickoff first`);
+  console.log("  Live scores:     only while followed matches can be in play, paced to last the day");
+  console.log("  Live odds:       off (in-play betting needs a paid plan)\n");
+  if (API_DAILY_LIMIT === 100 && !process.env.API_FOOTBALL_DAILY_LIMIT) {
+    console.log("  (Paid plan? Set API_FOOTBALL_DAILY_LIMIT to its daily requests.)\n");
+  }
+
+  setInterval(budgetTick, 20000);
+  setInterval(async () => {
+    const result = await settleBets();
+    if (result.settled > 0) broadcast("settled", { settled: result.settled, time: new Date().toISOString() });
+  }, 60000);
+  budgetTick().then(() => settleBets()).then(() => console.log("[ENGINE] Initial load complete\n"));
+}
+
+/** What the data plan allows right now, for /api/status (the app and admin panel show it). */
+function dataPlanStatus() {
+  return {
+    mode: DATA_MODE,
+    dailyLimit: apiBudget.limit,
+    usedToday: apiBudget.used(),
+    remainingToday: apiBudget.remaining(),
+    usedBy: apiBudget.spentByPurpose(),
+    liveOdds: DATA_MODE === "full",
+    liveIntervalSec: DATA_MODE === "full" ? 15 : (liveIntervalMs ? Math.round(liveIntervalMs / 1000) : null),
+    nextLivePollAt: DATA_MODE === "budget" && nextLivePollAt ? new Date(nextLivePollAt).toISOString() : null,
+    leagues: DATA_MODE === "budget" ? [...FOLLOWED_LEAGUES] : null,
+  };
+}
+
+// ══════════════════════════════════════════
 // ENGINE START
 // ══════════════════════════════════════════
 function startEngine() {
@@ -1383,6 +1562,9 @@ function startEngine() {
     console.log("[ENGINE] API key not configured — mock data only");
     return;
   }
+
+  installQuotaHooks();
+  if (DATA_MODE === "budget") return startBudgetEngine();
 
   console.log("[ENGINE] Starting real-time data engine...");
   console.log("  Live odds:       every 5s");
@@ -1473,4 +1655,11 @@ function __setState(state) {
   if ("betBuilderGenerate" in state) _betBuilderGenerate = state.betBuilderGenerate;
 }
 
-module.exports = { app, startServer, evaluateSelection, computeBetOutcome, quoteBet, settleBets, __setState };
+// test hooks for the engine (the budget-day simulation drives it with a fake clock and API)
+const __engine = {
+  installQuotaHooks, budgetTick, applyLiveUpdates, dataPlanStatus,
+  matches: () => matches,
+  idle: () => !_budgetBusy && !_preMatchBusy && !_dailyBusy && !_settleBusy,
+};
+
+module.exports = { app, startServer, evaluateSelection, computeBetOutcome, quoteBet, settleBets, __setState, __engine };

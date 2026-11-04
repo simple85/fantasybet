@@ -66,6 +66,12 @@
         <div id="adminStats" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:1rem;"></div>
       </div>
 
+      <!-- API DATA PLAN -->
+      <div class="integrity-section">
+        <h3>Football data plan</h3>
+        <div id="dataPlan"><p class="integrity-empty">Loading…</p></div>
+      </div>
+
       <!-- INTEGRITY REVIEW -->
       <div class="integrity-section">
         <h3>Integrity review</h3>
@@ -137,6 +143,30 @@
       renderUsers();
       renderStats();
       loadIntegrity();
+      loadDataPlan();
+    }
+
+    const PURPOSE_LABELS = { fixtures: "fixture list", preMatch: "pre-match odds", live: "live scores", liveOdds: "live odds", settlement: "settlement data", other: "other" };
+
+    async function loadDataPlan() {
+      const el = document.getElementById("dataPlan");
+      let p = null;
+      try {
+        const res = await fetch("/api/admin/data-plan");
+        if (res.ok) p = await res.json();
+      } catch (e) {}
+      if (!p) { el.innerHTML = '<p class="integrity-empty">Unavailable.</p>'; return; }
+      if (!p.apiKeyConfigured) { el.innerHTML = '<p class="integrity-empty">No API_FOOTBALL_KEY set: the site runs on mock data.</p>'; return; }
+      const pct = Math.min(100, Math.round(p.usedToday / Math.max(1, p.dailyLimit) * 100));
+      const by = Object.entries(p.usedBy || {}).map(([k, n]) => escapeHtml(PURPOSE_LABELS[k] || k) + ' ' + n).join(" · ") || "nothing yet";
+      const mode = p.mode === "budget"
+        ? 'Budget mode: live scores every ' + (p.liveIntervalSec ? Math.round(p.liveIntervalSec / 60 * 10) / 10 + ' min' : '– (no followed match in play)') + ', live odds off. Leagues: ' + escapeHtml((p.leagues || []).join(", "))
+        : 'Full mode: live odds every 5 s, live scores every 15 s.';
+      el.innerHTML =
+        '<p class="integrity-meta">' + mode + '</p>' +
+        '<div class="integrity-card__head"><strong>' + p.usedToday + ' / ' + p.dailyLimit + '</strong>' +
+        '<span class="integrity-score"><span style="width:' + pct + '%"></span></span><span class="integrity-pct">' + pct + '%</span></div>' +
+        '<div class="integrity-facts">Requests today (resets 00:00 UTC): ' + by + '</div>';
     }
 
     function escapeHtml(value) {

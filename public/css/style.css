@@ -2261,3 +2261,7 @@ input {
 .bb-card__actions { display: flex; gap: 0.4rem; }
 .bb-add { flex: 1; background: var(--accent); color: #04140b; border: 0; border-radius: var(--radius-sm); padding: 0.5rem; font-weight: 700; cursor: pointer; }
 .bb-dismiss { background: transparent; border: 1px solid var(--border); color: var(--text-secondary); border-radius: var(--radius-sm); width: 36px; cursor: pointer; }
+
+/* Free data plan notice above the match list */
+.data-plan-note { margin: 0.4rem 0 0.6rem; padding: 0.5rem 0.75rem; font-size: 0.75rem; color: var(--text-secondary); background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-md); }
+.data-plan-note[hidden] { display: none; }
