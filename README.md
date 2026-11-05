@@ -68,7 +68,7 @@ The `.env` file is protected by `.gitignore` and will never be pushed to the rep
 
 ## Data Refresh and API Quota
 
-API-Football sells requests per day: 100 on the free plan, thousands on paid plans. The server picks its engine from `API_FOOTBALL_DAILY_LIMIT` (default 100).
+API-Football sells requests per day: 100 on the free plan, thousands on paid plans. At startup the server reads the plan from `GET /status`, which doesn't count against the quota, and picks its engine. `API_FOOTBALL_DAILY_LIMIT` overrides the detected plan.
 
 **Full mode** (30,000+ requests a day):
 
@@ -83,20 +83,20 @@ API-Football sells requests per day: 100 on the free plan, thousands on paid pla
 
 - Only followed leagues are tracked: `API_FOOTBALL_LEAGUES` (by default Süper Lig, Premier League, La Liga, Bundesliga, Serie A, Ligue 1, Champions League and Europa League).
 - The fixture list is fetched once a day: 3 requests.
-- Pre-match odds come first, because they are what users bet on. They are fetched once per match, soonest kickoff first, using at most half of the quota.
+- Pre-match odds come first, because they are what users bet on. `GET /odds?league=` returns 10 matches per request, so a league with several upcoming matches is fetched whole. Single matches are fetched one by one, soonest kickoff first. Pre-match odds use at most half of the quota.
 - Live scores are polled only while a followed match can be in play. One `/fixtures?ids=` request covers up to 20 matches and also returns events and statistics, so settling costs nothing extra. The interval is recalculated after every poll so the remaining requests last until the quota resets at 00:00 UTC.
 - Live odds are off, so there is no in-play betting. A feed minutes old would let people bet on goals that already happened.
 - Pre-match betting closes at the kickoff time, even if the status hasn't been updated yet.
-- Requests are spaced to stay under the per-minute limit (`API_FOOTBALL_PER_MINUTE`, default 10). A reserve of 5 requests is kept for settling finished matches.
+- Requests are spaced to stay under the per-minute limit. It starts at `API_FOOTBALL_PER_MINUTE` (default 10), then follows the `X-RateLimit-Limit` header. The API may block a key that sends traffic spikes. A reserve of 5 requests is kept for settling finished matches.
 - The API's own count, read from the `x-ratelimit-requests-remaining` header, overrides the local one. A restart or another client using the same key can't make the server overspend.
 
 A simulated busy Saturday on the free plan, `__tests__/budgetDay.test.js`, has 28 followed matches and a fake API that enforces both limits:
 
 | | |
 |---|---|
-| Requests used | 94 / 100 (fixtures 3, pre-match odds 50, live scores 41) |
-| Live score refresh | about every 15 minutes during matches |
-| Final whistle seen after | median 6 minutes, at worst 16 minutes |
+| Requests used | 93 / 100 (fixtures 3, pre-match odds 16, live scores 74) |
+| Live score refresh | about every 8 minutes during matches |
+| Final whistle seen after | median 6 minutes, at worst 11 minutes |
 | Pre-match odds before kickoff | every match |
 
 The app tells users when it runs on the free plan, and the admin panel shows today's requests by purpose.
@@ -228,7 +228,7 @@ Works on any Node.js hosting platform. Currently deployed on Railway with a Post
 1. **Railway** (recommended):
    - Connect your repo
    - Add a PostgreSQL plugin
-   - Set `API_FOOTBALL_KEY` (and `API_FOOTBALL_DAILY_LIMIT` if you're on a paid plan), `ADMIN_ID`, `ADMIN_PASSWORD`, `SESSION_SECRET` and (for the bet builder) `GEMINI_API_KEY` as environment variables
+   - Set `API_FOOTBALL_KEY`, `ADMIN_ID`, `ADMIN_PASSWORD`, `SESSION_SECRET` and (for the bet builder) `GEMINI_API_KEY` as environment variables
    - Optional: a scheduled service running `cd ml && pip install . && python -m integrity score` for the integrity review
    - The `DATABASE_URL` is injected automatically by Railway
    - Start command: `npm start`

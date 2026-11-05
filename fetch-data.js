@@ -7,6 +7,8 @@
 //   GET /fixtures?from=&to=       Fixture list (daily refresh)
 //   GET /fixtures?live=all        Live scores & status (every 5-15s)
 //   GET /odds?fixture=X           Pre-match Bet365 odds (every 2h)
+//   GET /odds?league=&season=     Pre-match odds for a league, 10 per page (budget mode)
+//   GET /status                   Plan and usage (free: not counted)
 //   GET /odds/live                Live in-play odds (every 5s)
 //   GET /fixtures?ids=1-2-3       Up to 20 fixtures with events + stats (budget mode, see quota.js)
 //
@@ -48,11 +50,15 @@ const LIVE_DEDUP = [
 // minSpacingMs keeps requests apart for per-minute limits (the free plan allows ~10 a minute).
 let quotaGate = null;
 let quotaObserver = null;
+// Once a response reports the plan's real per-minute limit (X-RateLimit-Limit), spacing follows it.
 let minSpacingMs = 0;
 let nextSlotAt = 0;
+let spacingFollowsApi = false;
 function setQuotaHooks({ gate = null, observe = null, spacingMs = 0 } = {}) {
   quotaGate = gate; quotaObserver = observe; minSpacingMs = spacingMs; nextSlotAt = 0;
+  spacingFollowsApi = spacingMs > 0;
 }
+const spacingFor = (perMinute) => Math.ceil(60000 / Math.max(1, perMinute - 1));
 async function waitForSlot() {
   if (!minSpacingMs) return;
   const now = Date.now();
@@ -92,6 +98,8 @@ async function apiRequest(endpoint, params = {}, meta = {}) {
         const limit = res.headers["x-ratelimit-requests-limit"];
         if (remaining) console.log(`  Remaining: ${remaining}/${limit}`);
         if (quotaObserver && remaining != null) quotaObserver({ remaining: Number(remaining), limit: Number(limit) });
+        const perMinute = Number(res.headers["x-ratelimit-limit"]);
+        if (spacingFollowsApi && perMinute > 0) minSpacingMs = spacingFor(perMinute);
         try {
           const data = JSON.parse(body);
           // API-Football answers 200 with an "errors" object for problems such as a used-up daily
@@ -156,6 +164,7 @@ async function fetchFixturesByRange(from, to) {
           country: item.league.country,
           logo: item.league.logo,
           flag: item.league.flag,
+          season: item.league.season,
         },
         home: { id: item.teams.home.id, name: item.teams.home.name, logo: item.teams.home.logo },
         away: { id: item.teams.away.id, name: item.teams.away.name, logo: item.teams.away.logo },
@@ -302,6 +311,36 @@ function parseEvents(events) {
   return { goals, raw: events || [] };
 }
 
+// ── Pre-match odds for a whole league (budget mode) ──
+// GET /odds pages 10 fixtures per request; one league's upcoming week usually fits in a few
+// pages, far cheaper than one request per match. Returns Map fixtureId → bets, and pages read.
+async function fetchPreMatchOddsByLeague(league, season, { maxPages = 5 } = {}) {
+  const odds = new Map();
+  let page = 1, total = 1;
+  while (page <= total && page <= maxPages) {
+    const data = await apiRequest("odds", { league, season, bookmaker: BET365_ID, page });
+    total = data.paging?.total || 1;
+    for (const item of data.response || []) {
+      const bet365 = item.bookmakers?.find(b => b.id === BET365_ID);
+      if (item.fixture?.id && bet365) odds.set(item.fixture.id, bet365.bets.filter(b => ALLOWED_BET_IDS.has(b.id)));
+    }
+    page++;
+  }
+  return { odds, pages: page - 1, totalPages: total };
+}
+
+// ── Account status: plan and today's usage. Free: does not count against the daily quota. ──
+async function fetchStatus() {
+  const data = await apiRequest("status");
+  const r = data.response || {};
+  return {
+    plan: r.subscription?.plan || null,
+    active: r.subscription?.active ?? null,
+    limitDay: Number(r.requests?.limit_day) || null,
+    current: Number(r.requests?.current) || 0,
+  };
+}
+
 // ── Fetch fixture statistics (corners, cards, shots — 1 API call per fixture) ──
 async function fetchFixtureStatistics(fixtureId) {
   try {
@@ -373,6 +412,8 @@ module.exports = {
   parseStatistics,
   parseEvents,
   fetchFixturesByIds,
+  fetchPreMatchOddsByLeague,
+  fetchStatus,
   fetchFixturesByRange,
   fetchLiveFixtures,
   fetchLiveOdds,

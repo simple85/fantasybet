@@ -108,27 +108,43 @@ describe("liveIntervalMs", () => {
 describe("preMatchPlan", () => {
   const ms = [match(3, T0 + 20 * H), match(1, T0 + 12 * H), match(2, T0 + 14 * H), match(4, T0 + 50 * H),
     match(5, T0 + 13 * H, { statusShort: "PST" })];
+  const plan = (opts) => quota.preMatchPlan({ matches: ms, now: T0, fetchedAt: new Map(), budget: 90, limit: 100, spentToday: 0, ...opts });
+  const ids = (p) => p.units.flatMap((u) => u.ids);
 
   test("soonest kickoff first, within the horizon, upcoming only", () => {
-    const plan = quota.preMatchPlan({ matches: ms, now: T0, fetchedAt: new Map(), budget: 90, limit: 100, spentToday: 0 });
-    expect(plan).toEqual([1, 2, 3]);
+    expect(plan().units.map((u) => u.kind)).toEqual(["fixture", "fixture", "fixture"]);  // no season known
+    expect(ids(plan())).toEqual([1, 2, 3]);
   });
 
   test("skips matches fetched recently and respects the pre-match share", () => {
-    const fetchedAt = new Map([[1, T0 - 2 * H]]);
-    expect(quota.preMatchPlan({ matches: ms, now: T0, fetchedAt, budget: 90, limit: 100, spentToday: 0 })).toEqual([2, 3]);
-    expect(quota.preMatchPlan({ matches: ms, now: T0, fetchedAt: new Map(), budget: 90, limit: 100, spentToday: 49 })).toEqual([1]);
-    expect(quota.preMatchPlan({ matches: ms, now: T0, fetchedAt: new Map(), budget: 1, limit: 100, spentToday: 0 })).toEqual([1]);
+    expect(ids(plan({ fetchedAt: new Map([[1, T0 - 2 * H]]) }))).toEqual([2, 3]);
+    expect(ids(plan({ spentToday: 49 }))).toEqual([1]);
+    expect(ids(plan({ budget: 1 }))).toEqual([1]);
+  });
+
+  test("a league with several due matches is fetched whole (10 odds per request)", () => {
+    const league = { id: 39, season: 2026 };
+    const many = [1, 2, 3, 4].map((i) => match(i, T0 + (10 + i) * H, { league }));
+    const lone = match(9, T0 + 9 * H, { league: { id: 140, season: 2026 } });
+    const p = quota.preMatchPlan({ matches: [...many, lone], now: T0, fetchedAt: new Map(), budget: 90, limit: 100, spentToday: 0 });
+    expect(p.units).toEqual([
+      { kind: "fixture", ids: [9], first: T0 + 9 * H },
+      { kind: "league", league: 39, season: 2026, ids: [1, 2, 3, 4], first: T0 + 11 * H },
+    ]);
+    // when the league's estimate no longer fits, its matches go one by one
+    const tight = quota.preMatchPlan({ matches: many, now: T0, fetchedAt: new Map(), budget: 2, limit: 100, spentToday: 0 });
+    expect(tight.units).toEqual([{ kind: "fixture", ids: [1], first: T0 + 11 * H }, { kind: "fixture", ids: [2], first: T0 + 11 * H }]);
   });
 
   test("preMatchStillNeeded counts what will enter the horizon before the reset", () => {
-    expect(quota.preMatchStillNeeded({ matches: ms, now: T0, fetchedAt: new Map(), limit: 100, spentToday: 0 })).toBe(4);
+    expect(quota.preMatchStillNeeded({ matches: ms, now: T0, fetchedAt: new Map(), limit: 100, spentToday: 0 })).toBe(3);  // 4 in one league → ~3 requests
     expect(quota.preMatchStillNeeded({ matches: ms, now: T0, fetchedAt: new Map(), limit: 100, spentToday: 48 })).toBe(2);
   });
 });
 
 describe("purposeOf", () => {
   test("labels requests by what they are for", () => {
+    expect(quota.purposeOf("status")).toBe("status");
     expect(quota.purposeOf("odds/live")).toBe("liveOdds");
     expect(quota.purposeOf("odds", { fixture: 1 })).toBe("preMatch");
     expect(quota.purposeOf("fixtures", { ids: "1-2" })).toBe("live");

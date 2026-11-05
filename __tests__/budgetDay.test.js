@@ -46,7 +46,7 @@ function state(f, t) {
   const scored = elapsed == null ? [] : goals.filter(g => g.minute <= elapsed);
   return {
     fixture: { id: f.id, date: new Date(f.kickoff).toISOString(), status: { short, long, elapsed } },
-    league: { id: f.league, name: "L" + f.league, country: "X" },
+    league: { id: f.league, name: "L" + f.league, country: "X", season: 2026 },
     teams: { home: { id: f.id * 10, name: "Home " + f.id }, away: { id: f.id * 10 + 1, name: "Away " + f.id } },
     goals: elapsed == null ? { home: null, away: null } : { home: scored.filter(g => g.side === "home").length, away: scored.filter(g => g.side === "away").length },
     score: { halftime: { home: null, away: null } },
@@ -65,9 +65,13 @@ const oddsAt = new Map();
 const ftSeenAt = new Map();
 let used = 0, usedDay = null;
 let forceError = null;
+let statusLimit = LIMIT;
 
 function answer(path, t) {
   if (forceError) return { errors: forceError, response: [] };
+  if (path === "/status") {  // free: not counted
+    return { errors: [], response: { subscription: { plan: statusLimit === LIMIT ? "Free" : "Mega", active: true }, requests: { current: used, limit_day: statusLimit } } };
+  }
   const day = Math.floor(t / DAY);
   if (day !== usedDay) { usedDay = day; used = 0; }
   used++;
@@ -86,9 +90,18 @@ function answer(path, t) {
     const ids = p.ids.split("-").map(Number);
     return { errors: [], response: fixtures.filter(f => ids.includes(f.id)).map(f => state(f, t)) };
   }
-  if (url.pathname === "/odds") {
+  const bets = [{ id: 1, name: "Match Winner", values: [{ value: "Home", odd: "2.10" }, { value: "Draw", odd: "3.30" }, { value: "Away", odd: "3.40" }] }];
+  if (url.pathname === "/odds" && p.fixture) {
     oddsAt.set(Number(p.fixture), t);
-    return { errors: [], response: [{ bookmakers: [{ id: 8, bets: [{ id: 1, name: "Match Winner", values: [{ value: "Home", odd: "2.10" }, { value: "Draw", odd: "3.30" }, { value: "Away", odd: "3.40" }] }] }] }] };
+    return { errors: [], response: [{ fixture: { id: Number(p.fixture) }, bookmakers: [{ id: 8, bets }] }] };
+  }
+  if (url.pathname === "/odds" && p.league) {
+    // like the real endpoint: odds from 14 days before to 7 days after, 10 fixtures per page
+    const all = fixtures.filter(f => f.league === Number(p.league) && f.kickoff - t <= 14 * DAY && t - f.kickoff <= 7 * DAY);
+    const page = Number(p.page || 1), total = Math.max(1, Math.ceil(all.length / 10));
+    const slice = all.slice((page - 1) * 10, page * 10);
+    for (const f of slice) if (!oddsAt.has(f.id) && f.kickoff > t) oddsAt.set(f.id, t);
+    return { errors: [], paging: { current: page, total }, response: slice.map(f => ({ fixture: { id: f.id }, bookmakers: [{ id: 8, bets }] })) };
   }
   return { errors: [], response: [] };
 }
@@ -99,7 +112,10 @@ https.request.mockImplementation((options, cb) => {
     const body = JSON.stringify(answer(options.path, Date.now()));
     const res = new EventEmitter();
     res.statusCode = 200;
-    res.headers = { "x-ratelimit-requests-limit": String(LIMIT), "x-ratelimit-requests-remaining": String(Math.max(0, LIMIT - used)) };
+    res.headers = options.path === "/status" ? {} : {
+      "x-ratelimit-requests-limit": String(LIMIT), "x-ratelimit-requests-remaining": String(Math.max(0, LIMIT - used)),
+      "x-ratelimit-limit": String(PER_MINUTE), "x-ratelimit-remaining": "5",
+    };
     cb(res);
     res.emit("data", Buffer.from(body));
     res.emit("end");
@@ -118,6 +134,8 @@ test("a busy Saturday on 100 requests: quota holds, odds arrive before kickoff, 
   db.saveMatches.mockResolvedValue();
   db.replaceAllMatches.mockResolvedValue();
 
+  await engine.detectPlan();
+  expect(engine.dataPlanStatus()).toMatchObject({ mode: "budget", plan: "Free", dailyLimit: 100 });
   engine.installQuotaHooks();
   const followedSat = fixtures.filter(f => f.league !== 999 && f.kickoff >= SAT && f.kickoff < SAT + DAY);
   const polls = [];
@@ -157,7 +175,7 @@ test("a busy Saturday on 100 requests: quota holds, odds arrive before kickoff, 
   expect(Math.max(...finalDelay)).toBeLessThanOrEqual(30 * MIN);
 
   console.log([
-    `Saturday: ${saturday.length}/${LIMIT} requests — fixtures ${byKind(/date=/)}, pre-match odds ${byKind(/\/odds\?/)}, live scores ${livePolls.length}`,
+    `Saturday: ${saturday.length}/${LIMIT} requests — fixtures ${byKind(/date=/)}, pre-match odds ${byKind(/\/odds\?/)} (${byKind(/odds\?league/)} by league), live scores ${livePolls.length}`,
     `Live poll interval: median ${Math.round(polls.sort((a, b) => a - b)[Math.floor(polls.length / 2)] / MIN)} min`,
     `Final whistle seen after: median ${Math.round(finalDelay.sort((a, b) => a - b)[Math.floor(finalDelay.length / 2)] / MIN)} min, worst ${Math.round(Math.max(...finalDelay) / MIN)} min`,
   ].join("\n"));
@@ -172,4 +190,12 @@ test("an API error (like a used-up quota) is a failure, not an empty list of liv
   await expect(fetchLiveFixtures()).rejects.toThrow(/request limit/);
   forceError = null;
   console.error.mockRestore();
+});
+
+test("GET /status picks the engine: a large plan runs the full engine", async () => {
+  const { setQuotaHooks } = require("../fetch-data");
+  setQuotaHooks({});
+  statusLimit = 75000;
+  await engine.detectPlan();
+  expect(engine.dataPlanStatus()).toMatchObject({ mode: "full", plan: "Mega", dailyLimit: 75000 });
 });

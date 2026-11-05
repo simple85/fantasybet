@@ -32,7 +32,10 @@ const {
   fetchFixtureStatistics,
   fetchFixtureEvents,
   fetchFixturesByIds,
+  fetchPreMatchOddsByLeague,
+  fetchStatus,
   setQuotaHooks,
+  QuotaError,
   formatDate,
   sleep,
   isApiKeyConfigured,
@@ -63,12 +66,14 @@ let _preMatchBusy = false;
 let _dailyBusy = false;
 
 // ── API quota (see quota.js) ──
-// API_FOOTBALL_DAILY_LIMIT: requests per day on your plan (free: 100). Below 30,000 the server
-// runs in budget mode; the API's rate-limit headers correct the number once requests flow.
+// The plan's daily requests come from GET /status at startup (free: it doesn't count against
+// the quota); API_FOOTBALL_DAILY_LIMIT overrides it. Below 30,000 the server runs in budget mode,
+// and the rate-limit headers on every response keep the count right.
 const API_DAILY_LIMIT = Number(process.env.API_FOOTBALL_DAILY_LIMIT) || 100;
-const DATA_MODE = quota.modeFor(API_DAILY_LIMIT);
+let DATA_MODE = quota.modeFor(API_DAILY_LIMIT);
+let apiPlanName = null;
 const FOLLOWED_LEAGUES = quota.parseLeagues(process.env.API_FOOTBALL_LEAGUES);
-const apiBudget = quota.createBudget({ dailyLimit: API_DAILY_LIMIT, reserve: DATA_MODE === "budget" ? 5 : 0 });
+const apiBudget = quota.createBudget({ dailyLimit: API_DAILY_LIMIT, reserve: 5 });
 const _preMatchFetchedAt = new Map();  // matchId → when its pre-match odds were last fetched
 const _dataAttemptAt = new Map();      // matchId → last attempt to fetch missing stats/events
 const DATA_RETRY_MS = 30 * 60 * 1000;
@@ -1408,29 +1413,20 @@ async function refreshPreMatchOdds() {
       !LIVE_SHORT.has(m.statusShort) &&
       !SKIP_ODDS_SHORT.has(m.statusShort)
     );
-    if (DATA_MODE === "budget") {
-      const plan = quota.preMatchPlan({
-        matches: eligible, now: Date.now(), fetchedAt: _preMatchFetchedAt,
-        budget: apiBudget.spendable(), limit: apiBudget.limit, spentToday: apiBudget.spentByPurpose().preMatch || 0,
-      });
-      eligible = plan.slice(0, PREMATCH_PER_TICK).map(id => matches.find(m => m.id === id));
-      if (eligible.length === 0) return;
-    }
-
+    if (DATA_MODE === "budget") return await budgetPreMatchOdds(eligible);
     console.log(`[PRE-MATCH] Updating odds for ${eligible.length} fixtures...`);
     let updated = 0;
 
     for (const match of eligible) {
       try {
-        if (!apiBudget.spendable() && DATA_MODE === "budget") break;
         const bets = await fetchPreMatchOdds(match.id);
         _preMatchFetchedAt.set(match.id, Date.now());
         if (bets.length > 0) {
           match.bets = bets;
           updated++;
         }
-        // Small delay between calls to stay well within rate limits (budget mode spaces requests itself)
-        if (DATA_MODE !== "budget") await sleep(350);
+        // Small delay between calls to stay well within rate limits
+        await sleep(350);
       } catch (e) {
         console.error(`[PRE-MATCH] Fixture ${match.id}: ${e.message}`);
       }
@@ -1454,17 +1450,87 @@ async function refreshPreMatchOdds() {
 // ══════════════════════════════════════════
 // BUDGET ENGINE — small API plans (see quota.js)
 // ══════════════════════════════════════════
+
+/** Budget mode pre-match odds: a few requests per tick, a whole league at once where cheaper. */
+async function budgetPreMatchOdds(eligible) {
+  const now = Date.now();
+  const { units } = quota.preMatchPlan({
+    matches: eligible, now, fetchedAt: _preMatchFetchedAt,
+    budget: apiBudget.spendable(), limit: apiBudget.limit, spentToday: apiBudget.spentByPurpose().preMatch || 0,
+  });
+  if (units.length === 0) return;
+
+  let updated = 0, requests = 0;
+  const setOdds = (id, bets) => {
+    const match = matches.find(m => m.id === id);
+    if (!match) return;
+    _preMatchFetchedAt.set(id, Date.now());
+    if (bets.length > 0) { match.bets = bets; updated++; }
+  };
+  // asked for but no odds yet: the bookmaker may publish them later, so try again in a few hours
+  const retryLater = (id) => {
+    if (!matches.find(m => m.id === id)?.bets?.length) _preMatchFetchedAt.set(id, Date.now() - quota.PREMATCH_REFRESH_MS + quota.PREMATCH_RETRY_MS);
+  };
+
+  for (const unit of units) {
+    if (requests >= PREMATCH_PER_TICK) break;
+    try {
+      if (unit.kind === "league") {
+        const { odds, pages, totalPages } = await fetchPreMatchOddsByLeague(unit.league, unit.season);
+        requests += pages;
+        for (const [id, bets] of odds) setOdds(id, bets);   // also refreshes matches not yet due
+        if (pages >= totalPages) for (const id of unit.ids) if (!odds.has(id)) retryLater(id);
+        console.log(`[PRE-MATCH] League ${unit.league}: odds for ${odds.size} fixtures in ${pages} request(s)`);
+      } else {
+        const bets = await fetchPreMatchOdds(unit.ids[0]);
+        requests++;
+        setOdds(unit.ids[0], bets);
+        if (bets.length === 0) retryLater(unit.ids[0]);
+      }
+    } catch (e) {
+      console.error(`[PRE-MATCH] ${unit.kind} ${unit.kind === "league" ? unit.league : unit.ids[0]}: ${e.message}`);
+      if (e instanceof QuotaError) break;
+    }
+  }
+
+  if (updated > 0) {
+    await db.saveMatches(matches);
+    lastMatchUpdate = new Date().toISOString();
+    broadcast("oddsUpdate", { updated, time: lastMatchUpdate });
+  }
+  lastPreMatchOdds = Date.now();
+}
+
+/**
+ * Reads the plan from GET /status (doesn't count against the quota) and picks the engine:
+ * the full 5 s / 15 s engine needs a plan of 30,000+ requests a day.
+ */
+async function detectPlan() {
+  if (process.env.API_FOOTBALL_DAILY_LIMIT) return;  // set by hand: trust it
+  try {
+    const st = await fetchStatus();
+    if (st.limitDay) {
+      apiPlanName = st.plan;
+      DATA_MODE = quota.modeFor(st.limitDay);
+      apiBudget.sync({ limit: st.limitDay, remaining: st.limitDay - st.current });
+      console.log(`[ENGINE] API plan: ${st.plan || "?"}, ${st.limitDay} requests a day, ${st.current} used today`);
+    }
+  } catch (e) {
+    console.error(`[ENGINE] Couldn't read the API plan (${e.message}) — assuming ${API_DAILY_LIMIT} requests a day`);
+  }
+}
 function installQuotaHooks() {
   setQuotaHooks({
     gate: (endpoint, params, meta) => {
       const purpose = meta.purpose || quota.purposeOf(endpoint, params);
+      if (purpose === "status") return true;  // free
       // Settling finished matches may dip into the reserve; planned polling may not.
       const ok = apiBudget.tryConsume(1, purpose, { urgent: purpose === "settlement" });
       if (!ok) console.warn(`[QUOTA] ${purpose} request skipped — ${apiBudget.used()}/${apiBudget.limit} used today`);
       return ok;
     },
     observe: (h) => apiBudget.sync(h),
-    // a little under the per-minute limit, so other short bursts still fit
+    // a little under the per-minute limit; X-RateLimit-Limit on the responses then takes over
     spacingMs: DATA_MODE === "budget" ? Math.ceil(60000 / Math.max(1, API_PER_MINUTE - 1)) : 0,
   });
 }
@@ -1521,15 +1587,12 @@ async function budgetTick() {
 }
 
 function startBudgetEngine() {
-  console.log(`[ENGINE] Budget mode: ${apiBudget.limit} API requests a day`);
+  console.log(`[ENGINE] Budget mode: ${apiBudget.limit} API requests a day${apiPlanName ? ` (${apiPlanName} plan)` : ""}`);
   console.log(`  Leagues:         ${[...FOLLOWED_LEAGUES].join(", ")}`);
   console.log("  Fixtures:        once a day (3 requests)");
-  console.log(`  Pre-match odds:  up to ${Math.round(quota.PREMATCH_SHARE * 100)}% of the quota, soonest kickoff first`);
+  console.log(`  Pre-match odds:  per league where cheaper (10 matches a request), up to ${Math.round(quota.PREMATCH_SHARE * 100)}% of the quota, soonest kickoff first`);
   console.log("  Live scores:     only while followed matches can be in play, paced to last the day");
   console.log("  Live odds:       off (in-play betting needs a paid plan)\n");
-  if (API_DAILY_LIMIT === 100 && !process.env.API_FOOTBALL_DAILY_LIMIT) {
-    console.log("  (Paid plan? Set API_FOOTBALL_DAILY_LIMIT to its daily requests.)\n");
-  }
 
   setInterval(budgetTick, 20000);
   setInterval(async () => {
@@ -1543,6 +1606,7 @@ function startBudgetEngine() {
 function dataPlanStatus() {
   return {
     mode: DATA_MODE,
+    plan: apiPlanName,
     dailyLimit: apiBudget.limit,
     usedToday: apiBudget.used(),
     remainingToday: apiBudget.remaining(),
@@ -1557,12 +1621,13 @@ function dataPlanStatus() {
 // ══════════════════════════════════════════
 // ENGINE START
 // ══════════════════════════════════════════
-function startEngine() {
+async function startEngine() {
   if (!isApiKeyConfigured()) {
     console.log("[ENGINE] API key not configured — mock data only");
     return;
   }
 
+  await detectPlan();
   installQuotaHooks();
   if (DATA_MODE === "budget") return startBudgetEngine();
 
@@ -1640,7 +1705,7 @@ function startServer() {
       console.log("API key configured. Starting real-time engine...\n");
     }
 
-    startEngine();
+    startEngine().catch(e => console.error("[ENGINE] Start failed:", e.message));
   });
 }
 
@@ -1657,7 +1722,7 @@ function __setState(state) {
 
 // test hooks for the engine (the budget-day simulation drives it with a fake clock and API)
 const __engine = {
-  installQuotaHooks, budgetTick, applyLiveUpdates, dataPlanStatus,
+  installQuotaHooks, detectPlan, budgetTick, applyLiveUpdates, dataPlanStatus,
   matches: () => matches,
   idle: () => !_budgetBusy && !_preMatchBusy && !_dailyBusy && !_settleBusy,
 };
