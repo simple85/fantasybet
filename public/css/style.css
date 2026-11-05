@@ -2217,3 +2217,47 @@ input {
   background: var(--yellow-dim);
   color: var(--yellow);
 }
+
+/* ── Admin: integrity review ── */
+.integrity-section { margin-top: 2rem; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 1.2rem; }
+.integrity-section h3 { font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 0.4rem; }
+.integrity-section h4 { font-size: 0.8rem; color: var(--text-secondary); margin: 1.4rem 0 0.6rem; }
+.integrity-hint, .integrity-meta, .integrity-empty { font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 0.8rem; }
+.integrity-card { border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.8rem 1rem; margin-bottom: 0.6rem; }
+.integrity-card__head { display: flex; align-items: center; gap: 0.8rem; }
+.integrity-card ul { margin: 0.5rem 0 0.3rem 1.1rem; font-size: 0.85rem; }
+.integrity-score { flex: 1; max-width: 160px; height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; }
+.integrity-score span { display: block; height: 100%; background: #e5534b; }
+.integrity-pct { font-size: 0.8rem; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.integrity-facts { font-size: 0.75rem; color: var(--text-secondary); }
+.integrity-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+.integrity-table th, .integrity-table td { text-align: left; padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--border); }
+@media (max-width: 600px) { .integrity-table { display: block; overflow-x: auto; white-space: nowrap; } }
+
+/* ── Bet builder (describe a bet in words) ── */
+.bb { padding: 0.6rem 0.8rem; border-bottom: 1px solid var(--border); }
+.bb-form { display: flex; align-items: center; gap: 0.4rem; background: var(--bg-card-hover); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0.25rem 0.3rem 0.25rem 0.6rem; }
+.bb-form:focus-within { border-color: var(--accent); }
+.bb-icon { font-size: 0.9rem; }
+.bb-form input { flex: 1; min-width: 0; background: transparent; border: 0; color: var(--text-primary); font-size: 16px; padding: 0.35rem 0; outline: none; }
+.bb-form input::placeholder { color: var(--text-secondary); font-size: 0.78rem; }
+.bb-form button { background: var(--accent); color: #04140b; border: 0; border-radius: var(--radius-sm); width: 32px; height: 32px; font-size: 0.85rem; cursor: pointer; flex-shrink: 0; }
+.bb-form button:disabled { opacity: 0.4; cursor: default; }
+.bb-thread { max-height: 260px; overflow-y: auto; display: flex; flex-direction: column; gap: 0.4rem; margin-top: 0.5rem; }
+.bb-thread:empty { display: none; }
+.bb-msg { font-size: 0.8rem; line-height: 1.35; padding: 0.45rem 0.6rem; border-radius: var(--radius-md); max-width: 90%; white-space: pre-wrap; }
+.bb-msg--user { align-self: flex-end; background: var(--accent-dim); color: var(--text-primary); }
+.bb-msg--model { align-self: flex-start; background: var(--bg-card-hover); color: var(--text-primary); }
+.bb-msg--error { color: #ff8a80; }
+.bb-thinking { color: var(--text-secondary); font-style: italic; }
+.bb-card { border: 1px solid var(--accent); border-radius: var(--radius-md); padding: 0.6rem; background: var(--bg-card); }
+.bb-sel { padding: 0.3rem 0; border-bottom: 1px solid var(--border); }
+.bb-sel:last-of-type { border-bottom: 0; }
+.bb-sel__match { font-size: 0.72rem; color: var(--text-secondary); }
+.bb-sel__pick { font-size: 0.82rem; display: flex; gap: 0.3rem; align-items: baseline; }
+.bb-sel__odd { margin-left: auto; color: var(--accent); font-weight: 700; font-variant-numeric: tabular-nums; }
+.bb-card__totals { display: flex; flex-wrap: wrap; gap: 0.3rem 0.8rem; font-size: 0.75rem; color: var(--text-secondary); margin: 0.4rem 0; }
+.bb-card__totals strong { color: var(--text-primary); }
+.bb-card__actions { display: flex; gap: 0.4rem; }
+.bb-add { flex: 1; background: var(--accent); color: #04140b; border: 0; border-radius: var(--radius-sm); padding: 0.5rem; font-weight: 700; cursor: pointer; }
+.bb-dismiss { background: transparent; border: 1px solid var(--border); color: var(--text-secondary); border-radius: var(--radius-sm); width: 36px; cursor: pointer; }

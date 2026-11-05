@@ -65,6 +65,18 @@
         <h3 style="font-size:0.85rem;color:var(--text-secondary);margin-bottom:0.8rem;">Stats</h3>
         <div id="adminStats" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:1rem;"></div>
       </div>
+
+      <!-- INTEGRITY REVIEW -->
+      <div class="integrity-section">
+        <h3>Integrity review</h3>
+        <p class="integrity-hint">
+          Users flagged by the latest integrity run (<code>python -m integrity score</code>), most suspicious first.
+          A flag is a reason to look at someone's bets, not proof of cheating.
+        </p>
+        <div id="integrityFlags"><p class="integrity-empty">Loading…</p></div>
+        <h4>Recently refused live bets</h4>
+        <div id="integrityRefused"></div>
+      </div>
     </div>
   </div>
 
@@ -82,10 +94,11 @@
       if (e.key === "Enter") adminLogin();
     });
 
-    // Check session
-    if (sessionStorage.getItem("betzone_admin") === "true") {
-      showAdminPanel();
-    }
+    // Check session (the httpOnly cookie is the source of truth)
+    fetch("/api/auth/me")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => { if (data && data.user.isAdmin) showAdminPanel(); })
+      .catch(() => {});
 
     async function adminLogin() {
       const id = document.getElementById("adminId").value.trim();
@@ -100,7 +113,6 @@
         });
         const data = await res.json();
         if (data.success && data.user.isAdmin) {
-          sessionStorage.setItem("betzone_admin", "true");
           showAdminPanel();
         } else {
           errorEl.textContent = t("loginError");
@@ -115,8 +127,7 @@
     }
 
     function adminLogout() {
-      sessionStorage.removeItem("betzone_admin");
-      location.reload();
+      fetch("/api/auth/logout", { method: "POST" }).finally(() => location.reload());
     }
 
     async function showAdminPanel() {
@@ -125,11 +136,61 @@
       await loadUsers();
       renderUsers();
       renderStats();
+      loadIntegrity();
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    }
+
+    const RULE_LABELS = {
+      feed_delayed: "odds feed delayed",
+      incident_cooldown: "right after a goal/card",
+      odds_not_updated: "odds not yet updated after a goal/card",
+    };
+
+    async function loadIntegrity() {
+      const flagsEl = document.getElementById("integrityFlags");
+      const refusedEl = document.getElementById("integrityRefused");
+      let data = { flags: [], refused: [] };
+      try {
+        const res = await fetch("/api/admin/integrity");
+        if (res.ok) data = await res.json();
+      } catch (e) {}
+
+      const flagged = data.flags.filter(f => f.flagged);
+      if (data.flags.length === 0) {
+        flagsEl.innerHTML = '<p class="integrity-empty">No scoring run yet. Run <code>python -m integrity score</code> in <code>ml/</code>.</p>';
+      } else if (flagged.length === 0) {
+        flagsEl.innerHTML = '<p class="integrity-empty">Latest run (' + new Date(data.flags[0].createdAt).toLocaleString() + '): nobody flagged among ' + data.flags.length + ' users.</p>';
+      } else {
+        flagsEl.innerHTML =
+          '<p class="integrity-meta">Run of ' + new Date(flagged[0].createdAt).toLocaleString() + ' · ' + flagged.length + ' of ' + data.flags.length + ' users flagged</p>' +
+          flagged.map(f => {
+            const pct = Math.round(f.score * 100);
+            const reasons = (f.reasons && f.reasons.text) || [];
+            return '<div class="integrity-card">' +
+              '<div class="integrity-card__head"><strong>@' + escapeHtml(f.userId) + '</strong>' +
+              '<span class="integrity-score"><span style="width:' + pct + '%"></span></span><span class="integrity-pct">' + pct + '</span></div>' +
+              '<ul>' + reasons.map(r => '<li>' + escapeHtml(r) + '</li>').join("") + '</ul>' +
+              '<div class="integrity-facts">' + escapeHtml(f.features.n_bets) + ' bets · luck z ' + escapeHtml(Number(f.features.luck_z).toFixed(1)) +
+              ' · live share ' + Math.round((f.features.live_share || 0) * 100) + '%</div>' +
+            '</div>';
+          }).join("");
+      }
+
+      refusedEl.innerHTML = data.refused.length === 0
+        ? '<p class="integrity-empty">None yet.</p>'
+        : '<table class="integrity-table"><tr><th>When</th><th>User</th><th>Match</th><th>Why</th><th>Minute</th></tr>' +
+          data.refused.map(e => '<tr><td>' + new Date(e.createdAt).toLocaleString() + '</td><td>@' + escapeHtml(e.userId) + '</td><td>' + escapeHtml(e.fixtureId) +
+            '</td><td>' + escapeHtml(RULE_LABELS[e.rule] || e.rule) + '</td><td>' + escapeHtml(e.detail && e.detail.minute != null ? e.detail.minute + "'" : "–") + '</td></tr>').join("") +
+          '</table>';
     }
 
     async function loadUsers() {
       try {
         const res = await fetch("/api/users");
+        if (res.status === 401 || res.status === 403) { adminLogout(); return; }
         usersData = await res.json();
       } catch (e) {
         usersData = [];

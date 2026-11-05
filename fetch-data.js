@@ -150,7 +150,19 @@ async function fetchLiveFixtures() {
     elapsed: item.fixture.status.elapsed,
     score: item.goals.home !== null ? { home: item.goals.home, away: item.goals.away } : null,
     htScore: item.score?.halftime?.home !== null ? { home: item.score.halftime.home, away: item.score.halftime.away } : null,
+    redCards: countRedCards(item),
   }));
+}
+
+// Red cards per team from the live events (a second yellow counts as a red).
+function countRedCards(item) {
+  const reds = { home: 0, away: 0 };
+  for (const ev of item.events || []) {
+    if (ev.type !== "Card" || !/red|second yellow/i.test(ev.detail || "")) continue;
+    if (ev.team?.id === item.teams?.home?.id) reds.home++;
+    else if (ev.team?.id === item.teams?.away?.id) reds.away++;
+  }
+  return reds;
 }
 
 // ── Fetch all live odds (1 API call — returns every in-play fixture's odds) ──
@@ -292,6 +304,7 @@ function loadExistingData() {
 
 // ── Exports ──
 module.exports = {
+  countRedCards,
   apiRequest,
   fetchFixturesByRange,
   fetchLiveFixtures,

@@ -13,3 +13,5 @@ Thumbs.db
 
 # Claude
 .claude/
+# Test coverage
+coverage/

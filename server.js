@@ -35,6 +35,10 @@ const {
   isApiKeyConfigured,
 } = require("./fetch-data");
 const db = require("./db");
+const auth = require("./auth");
+const pricing = require("./pricing");
+const integrity = require("./integrity");
+const betBuilder = require("./betBuilder");
 
 const app = express();
 const PORT = process.env.PORT || 8000;
@@ -84,6 +88,7 @@ app.use(compression({ filter: (req, res) => {
   return compression.filter(req, res);
 }}));
 app.use(express.json());
+app.use(auth.attachSession);
 app.use(express.static(path.join(__dirname, "public")));
 
 // ── /logout route: serve app.html which auto-detects and logs out ──
@@ -137,13 +142,18 @@ app.post("/api/auth/login", async (req, res) => {
 
   const adminId = process.env.ADMIN_ID || "admin";
   const adminPass = process.env.ADMIN_PASSWORD || "";
-  if (id.toLowerCase() === adminId.toLowerCase() && password === adminPass) {
+  // admin login is disabled (fails closed) until ADMIN_PASSWORD is set
+  if (adminPass && id.toLowerCase() === adminId.toLowerCase() && auth.safeEqual(password, adminPass)) {
+    auth.setSessionCookie(res, adminId.toLowerCase(), "admin");
     return res.json({ success: true, user: { id: adminId, displayName: "Admin", credits: 0, isAdmin: true } });
   }
 
   try {
     const user = await db.getUserById(id.toLowerCase());
-    if (user && user.password === password) {
+    if (user && auth.verifyPassword(password, user.password)) {
+      // re-hash passwords still stored in plaintext from before hashing was introduced
+      if (!auth.isHashed(user.password)) await db.updateUserPassword(user.id, auth.hashPassword(password));
+      auth.setSessionCookie(res, user.id, "user");
       res.json({ success: true, user: { id: user.id, displayName: user.displayName, credits: user.credits } });
     } else {
       res.json({ success: false, error: "Invalid credentials" });
@@ -153,17 +163,26 @@ app.post("/api/auth/login", async (req, res) => {
   }
 });
 
+app.post("/api/auth/logout", (req, res) => {
+  auth.clearSessionCookie(res);
+  res.json({ success: true });
+});
+
+app.get("/api/auth/me", auth.requireUser, (req, res) => {
+  res.json({ success: true, user: { id: req.session.userId, isAdmin: req.session.role === "admin" } });
+});
+
 // ══════════════════════════════════════════
 // USER ROUTES
 // ══════════════════════════════════════════
-app.get("/api/users", async (req, res) => {
+app.get("/api/users", auth.requireAdmin, async (req, res) => {
   try {
     const users = await db.getUsers();
     res.json(users.map(u => ({ id: u.id, displayName: u.displayName, credits: u.credits })));
   } catch (e) { res.status(500).json({ error: "Database error" }); }
 });
 
-app.post("/api/users", async (req, res) => {
+app.post("/api/users", auth.requireAdmin, async (req, res) => {
   const { id, password, displayName } = req.body;
   if (!id || !password || !displayName) {
     return res.status(400).json({ success: false, error: "Missing fields" });
@@ -171,12 +190,12 @@ app.post("/api/users", async (req, res) => {
   try {
     const existing = await db.getUserById(id.toLowerCase().trim());
     if (existing) return res.status(409).json({ success: false, error: "User already exists" });
-    await db.createUser(id.toLowerCase().trim(), password, displayName.trim());
+    await db.createUser(id.toLowerCase().trim(), auth.hashPassword(password), displayName.trim());
     res.json({ success: true, user: { id: id.toLowerCase().trim(), displayName: displayName.trim(), credits: 0 } });
   } catch (e) { res.status(500).json({ success: false, error: "Database error" }); }
 });
 
-app.delete("/api/users/:id", async (req, res) => {
+app.delete("/api/users/:id", auth.requireAdmin, async (req, res) => {
   try {
     const deleted = await db.deleteUser(req.params.id);
     if (!deleted) return res.status(404).json({ success: false, error: "User not found" });
@@ -184,7 +203,7 @@ app.delete("/api/users/:id", async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: "Database error" }); }
 });
 
-app.post("/api/users/:id/credits", async (req, res) => {
+app.post("/api/users/:id/credits", auth.requireAdmin, async (req, res) => {
   const { action, amount } = req.body;
   try {
     const user = await db.getUserById(req.params.id);
@@ -204,7 +223,18 @@ app.post("/api/users/:id/credits", async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, error: "Database error" }); }
 });
 
-app.get("/api/users/:id", async (req, res) => {
+// ── Integrity review (admin): the latest offline scoring run + recent refused live bets ──
+app.get("/api/admin/integrity", auth.requireAdmin, async (req, res) => {
+  try {
+    const [flags, refused] = await Promise.all([db.getLatestIntegrityFlags(), db.getRecentIntegrityEvents(30)]);
+    res.json({ flags, refused });
+  } catch (e) {
+    console.error("[INTEGRITY] review error:", e.message);
+    res.status(500).json({ flags: [], refused: [] });
+  }
+});
+
+app.get("/api/users/:id", auth.requireSelfOrAdmin("id"), async (req, res) => {
   try {
     const user = await db.getUserById(req.params.id);
     if (!user) return res.status(404).json({ success: false });
@@ -212,46 +242,103 @@ app.get("/api/users/:id", async (req, res) => {
   } catch (e) { res.status(500).json({ success: false }); }
 });
 
+// ── Stake, cost and payout of a new bet, computed on the server ──
+// The browser's own totals are ignored so nobody can send a negative stake or inflate the payout.
+function quoteBet({ selections, stake, mode }) {
+  const betMode = mode || "combined";
+  if (!["combined", "system"].includes(betMode)) return { error: "Invalid bet mode" };
+  const amount = Number(stake);
+  if (!Number.isFinite(amount) || amount <= 0) return { error: "Stake must be a positive amount" };
+  const odds = selections.map((s) => Number(s && s.odd));
+  if (odds.some((o) => !Number.isFinite(o) || o < 1)) return { error: "Invalid odds" };
+
+  const round = (n) => Math.round(n * 100) / 100;
+  if (betMode === "system") {
+    return {
+      mode: betMode,
+      stake: amount,
+      totalCost: round(amount * odds.length),
+      totalOdds: 0,
+      possibleWin: round(odds.reduce((sum, o) => sum + amount * o, 0)),
+    };
+  }
+  const totalOdds = odds.reduce((acc, o) => acc * o, 1);
+  return { mode: betMode, stake: amount, totalCost: amount, totalOdds: round(totalOdds), possibleWin: round(amount * totalOdds) };
+}
+
 // ══════════════════════════════════════════
 // BET ROUTES
 // ══════════════════════════════════════════
-app.post("/api/bets", async (req, res) => {
-  const { userId, selections, stake, totalOdds, possibleWin, mode } = req.body;
-  if (!userId || !selections || !stake || (totalOdds == null && !mode)) {
+app.post("/api/bets", auth.requireUser, async (req, res) => {
+  // bets are always placed for the logged-in user, never for an id sent by the browser
+  const userId = req.session.userId;
+  const { selections, stake, totalOdds, mode } = req.body;
+  if (req.session.role === "admin") {
+    return res.status(403).json({ success: false, error: "Admins cannot place bets" });
+  }
+  if (!Array.isArray(selections) || selections.length === 0 || !stake || (totalOdds == null && !mode)) {
     return res.status(400).json({ success: false, error: "Missing fields" });
   }
 
-  // Reject bets on finished matches or suspended/stale odds
+  // Price every selection from the server's odds; the browser's odds only tell us what the user saw.
+  const priced = [];
+  const changes = [];
+  const now = Date.now();
   for (const sel of selections) {
-    const match = matches.find(m => m.id === sel.matchId);
-    if (match && (FINISHED_SHORT.has(match.statusShort) || SETTLED_STATUSES_BET.has(match.status))) {
+    const match = matches.find(m => m.id === Number(sel && sel.matchId));
+    if (!match) return res.status(400).json({ success: false, error: "Unknown match" });
+    if (FINISHED_SHORT.has(match.statusShort) || SETTLED_STATUSES_BET.has(match.status)) {
       return res.status(400).json({ success: false, error: "Match already finished: " + (match.home?.name || sel.matchId) + " vs " + (match.away?.name || "") });
     }
-    if (match && LIVE_SHORT.has(match.statusShort)) {
-      const liveItem = currentLiveOdds.find(o => o.fixtureId === sel.matchId);
-      if (liveItem) {
-        const liveBet = (liveItem.odds || []).find(b => b.id === sel.betId);
-        const liveVal = liveBet && (liveBet.values || []).find(v => v.value === sel.pick);
-        if (!liveVal || liveVal.suspended) {
-          return res.status(400).json({ success: false, error: "Odds suspended for this selection" });
-        }
+    const live = LIVE_SHORT.has(match.statusShort);
+    const liveItem = live ? currentLiveOdds.find(o => o.fixtureId === match.id) : null;
+    const price = pricing.priceSelection(sel, { match, liveItem, live });
+    if (price.error) return res.status(400).json({ success: false, error: price.error });
+
+    let context;
+    if (live) {
+      const check = integrity.checkLiveBet(match.id, match, now);
+      if (!check.ok) {
+        Promise.resolve(db.logIntegrityEvent({ userId, fixtureId: match.id, rule: check.rule, detail: { ...check.snapshot, betId: Number(sel.betId), pick: sel.pick } }))
+          .catch(e => console.error("[INTEGRITY] log error:", e.message));
+        return res.status(400).json({ success: false, error: check.error, rule: check.rule });
       }
+      context = check.snapshot;
     }
+
+    if (!pricing.samePrice(price.odd, sel.odd)) {
+      changes.push({ matchId: match.id, betId: Number(sel.betId), pick: price.pick, odd: price.odd });
+    }
+    // Only trusted fields are stored: nothing else the browser sent ends up in the bet.
+    priced.push({
+      matchId: match.id,
+      matchLabel: (match.home?.name || "") + " - " + (match.away?.name || ""),
+      betId: Number(sel.betId),
+      marketLabel: price.marketName,
+      pick: price.pick,
+      pickLabel: price.pick,
+      odd: price.odd,
+      ...(live ? { live: true, context } : {}),
+    });
+  }
+  if (changes.length > 0) {
+    return res.status(409).json({ success: false, error: "Odds changed", changes });
   }
 
-  const betMode = mode || "combined";
-  const totalCost = betMode === "system" ? parseFloat(stake) * selections.length : parseFloat(stake);
+  const quote = quoteBet({ selections: priced, stake, mode });
+  if (quote.error) return res.status(400).json({ success: false, error: quote.error });
 
   const bet = {
     id: "FB" + Date.now().toString(36).toUpperCase(),
     userId,
     timestamp: new Date().toISOString(),
-    mode: betMode,
-    selections,
-    stake: parseFloat(stake),
-    totalOdds: parseFloat(totalOdds),
-    possibleWin: parseFloat(possibleWin),
+    mode: quote.mode,
+    selections: priced,
+    stake: quote.stake,
+    totalOdds: quote.totalOdds,
+    possibleWin: quote.possibleWin,
   };
+  const totalCost = quote.totalCost;
 
   try {
     const result = await db.placeBetTransaction(userId, totalCost, bet);
@@ -263,7 +350,68 @@ app.post("/api/bets", async (req, res) => {
   }
 });
 
-app.get("/api/bets/:userId", async (req, res) => {
+// ══════════════════════════════════════════
+// BET BUILDER (natural language → proposed slip, see betBuilder.js)
+// ══════════════════════════════════════════
+const BET_BUILDER_DAILY_LIMIT = Number(process.env.BET_BUILDER_DAILY_LIMIT || 40);
+let _betBuilderGenerate = null; // created on first use; tests inject a fake
+
+function validTimeZone(tz) {
+  try { new Intl.DateTimeFormat("en", { timeZone: tz }); return true; } catch { return false; }
+}
+
+function cleanBuilderRequest(body) {
+  const { message, history, slip, lang, tz } = body || {};
+  if (typeof message !== "string" || !message.trim() || message.length > 500) return null;
+  const turns = Array.isArray(history) ? history.slice(-8) : [];
+  if (!turns.every(h => h && (h.role === "user" || h.role === "model") && typeof h.text === "string" && h.text.length <= 1000)) return null;
+  let cleanSlip = null;
+  if (slip && Array.isArray(slip.selections) && slip.selections.length <= 20) {
+    cleanSlip = {
+      mode: slip.mode === "system" ? "system" : "combined",
+      stake: Number.isFinite(Number(slip.stake)) ? Number(slip.stake) : null,
+      selections: slip.selections.map(s => ({ matchId: Number(s.matchId), betId: Number(s.betId), pick: String(s.pick).slice(0, 60) })),
+    };
+  }
+  return {
+    message: message.trim(),
+    history: turns.map(h => ({ role: h.role, text: h.text })),
+    slip: cleanSlip,
+    lang: ["tr", "en", "de"].includes(lang) ? lang : "en",
+    tz: typeof tz === "string" && validTimeZone(tz) ? tz : "Europe/Istanbul",
+  };
+}
+
+app.post("/api/bet-builder", auth.requireUser, async (req, res) => {
+  if (req.session.role === "admin") return res.status(403).json({ error: "Admins cannot place bets" });
+  if (!_betBuilderGenerate && !process.env.GEMINI_API_KEY) return res.status(503).json({ error: "not_configured" });
+  const input = cleanBuilderRequest(req.body);
+  if (!input) return res.status(400).json({ error: "invalid_input" });
+
+  const userId = req.session.userId;
+  try {
+    if ((await db.betBuilderCallsLastDay(userId)) >= BET_BUILDER_DAILY_LIMIT) {
+      return res.status(429).json({ error: "daily_limit" });
+    }
+    if (!_betBuilderGenerate) _betBuilderGenerate = betBuilder.geminiGenerate();
+    const result = await betBuilder.runBetBuilder(input, {
+      generate: _betBuilderGenerate,
+      getMatches: () => matches,
+      getLiveOdds: () => currentLiveOdds,
+      isLive: m => LIVE_SHORT.has(m.statusShort),
+      isFinished: m => FINISHED_SHORT.has(m.statusShort) || SETTLED_STATUSES_BET.has(m.status) || VOID_STATUSES_BET.has(m.status),
+      quoteBet,
+      onUsage: u => Promise.resolve(db.logBetBuilderUsage({ userId, ...u })).catch(e => console.error("[BET-BUILDER] usage log:", e.message)),
+    });
+    res.json(result);
+  } catch (e) {
+    const code = betBuilder.errorCode(e);
+    console.error(`[BET-BUILDER] ${code}:`, e.message);
+    res.status(code === "busy" ? 429 : code === "not_configured" ? 503 : 502).json({ error: code });
+  }
+});
+
+app.get("/api/bets/:userId", auth.requireSelfOrAdmin("userId"), async (req, res) => {
   try {
     const bets = await db.getBetsByUser(req.params.userId);
     res.json(bets);
@@ -306,15 +454,15 @@ app.get("/api/status", (req, res) => {
 // ══════════════════════════════════════════
 // MANUAL TRIGGERS
 // ══════════════════════════════════════════
-app.post("/api/fetch/daily", async (req, res) => {
+app.post("/api/fetch/daily", auth.requireAdmin, async (req, res) => {
   try { await dailyRefresh(); res.json({ success: true, matchCount: matches.length }); }
   catch (err) { res.status(500).json({ success: false, error: err.message }); }
 });
-app.post("/api/fetch/prematch", async (req, res) => {
+app.post("/api/fetch/prematch", auth.requireAdmin, async (req, res) => {
   try { await refreshPreMatchOdds(); res.json({ success: true }); }
   catch (err) { res.status(500).json({ success: false, error: err.message }); }
 });
-app.post("/api/settle", async (req, res) => {
+app.post("/api/settle", auth.requireAdmin, async (req, res) => {
   const result = await settleBets();
   res.json({ success: true, ...result });
 });
@@ -821,6 +969,52 @@ function evaluateByName(name, pick, h, a, total, ht, htH, htA, htTotal, h2H, h2A
   return null; // no name match — fall through to ID-based
 }
 
+// ── Payout calculation for a bet whose selections all have a result ──
+// combined: any lost → lost; void legs count as odds 1.0; all void → stake refunded
+// system:   each selection is its own single bet of `stake`
+function computeBetOutcome(bet) {
+  let status, payout = 0, finalOdds = bet.totalOdds, finalWin = bet.possibleWin;
+
+  if (bet.mode === "system") {
+    let totalPayout = 0;
+    let wonCount = 0, lostCount = 0, voidCount = 0;
+    for (const sel of bet.selections) {
+      if (sel.result === "won") { totalPayout += bet.stake * sel.odd; wonCount++; }
+      else if (sel.result === "void") { totalPayout += bet.stake; voidCount++; }
+      else { lostCount++; }
+    }
+    payout = Math.round(totalPayout * 100) / 100;
+    finalWin = payout;
+    if (wonCount === 0 && voidCount === 0) status = "lost";
+    else if (wonCount === 0 && voidCount > 0 && lostCount === 0) status = "void";
+    else status = wonCount > 0 ? "won" : "void";
+  } else {
+    const anyLost = bet.selections.some(s => s.result === "lost");
+    const anyVoid = bet.selections.some(s => s.result === "void");
+    if (anyLost) {
+      status = "lost";
+      payout = 0;
+    } else if (anyVoid) {
+      const allVoid = bet.selections.every(s => s.result === "void");
+      if (allVoid) {
+        status = "void";
+        payout = bet.stake;
+      } else {
+        const adjustedOdds = bet.selections.reduce((acc, s) => acc * (s.result === "void" ? 1.0 : s.odd), 1.0);
+        payout = Math.round(bet.stake * adjustedOdds * 100) / 100;
+        status = "won";
+        finalOdds = Math.round(adjustedOdds * 100) / 100;
+        finalWin = payout;
+      }
+    } else {
+      status = "won";
+      payout = bet.possibleWin;
+    }
+  }
+
+  return { status, payout, finalOdds, finalWin };
+}
+
 let _settleBusy = false;
 async function settleBets() {
   if (_settleBusy) return { settled: 0 };
@@ -895,48 +1089,18 @@ async function _settleBetsInner() {
         }
       }
       sel.result = result;
+      // Keep the goal timeline on live selections: the integrity detection (ml/integrity) compares
+      // it with the bet's snapshot, and old matches are dropped from memory by the daily refresh.
+      if (sel.live && match.events && Array.isArray(match.events.goals)) {
+        sel.goals = match.events.goals.map(g => ({ minute: g.minute, side: g.teamId === match.home?.id ? "home" : "away" }));
+      }
       if (result === "void") anyVoid = true;
       else if (result === "lost") anyLost = true;
     }
 
     if (!allFinished) continue;
 
-    let status, payout = 0, finalOdds = bet.totalOdds, finalWin = bet.possibleWin;
-
-    if (bet.mode === "system") {
-      let totalPayout = 0;
-      let wonCount = 0, lostCount = 0, voidCount = 0;
-      for (const sel of bet.selections) {
-        if (sel.result === "won") { totalPayout += bet.stake * sel.odd; wonCount++; }
-        else if (sel.result === "void") { totalPayout += bet.stake; voidCount++; }
-        else { lostCount++; }
-      }
-      payout = Math.round(totalPayout * 100) / 100;
-      finalWin = payout;
-      if (wonCount === 0 && voidCount === 0) status = "lost";
-      else if (wonCount === 0 && voidCount > 0 && lostCount === 0) status = "void";
-      else status = wonCount > 0 ? "won" : "void";
-    } else {
-      if (anyLost) {
-        status = "lost";
-        payout = 0;
-      } else if (anyVoid) {
-        const allVoid = bet.selections.every(s => s.result === "void");
-        if (allVoid) {
-          status = "void";
-          payout = bet.stake;
-        } else {
-          const adjustedOdds = bet.selections.reduce((acc, s) => acc * (s.result === "void" ? 1.0 : s.odd), 1.0);
-          payout = Math.round(bet.stake * adjustedOdds * 100) / 100;
-          status = "won";
-          finalOdds = Math.round(adjustedOdds * 100) / 100;
-          finalWin = payout;
-        }
-      } else {
-        status = "won";
-        payout = bet.possibleWin;
-      }
-    }
+    const { status, payout, finalOdds, finalWin } = computeBetOutcome(bet);
 
     try {
       await db.settleBetTransaction(bet.id, status, finalWin, finalOdds, bet.selections, bet.userId, payout);
@@ -972,6 +1136,7 @@ async function tickLiveOdds() {
   try {
     const odds = await fetchLiveOdds();
     const now = Date.now();
+    integrity.noteOddsTick(now);
 
     // Check each fixture for staleness
     for (const item of odds) {
@@ -982,9 +1147,11 @@ async function tickLiveOdds() {
       if (!prev) {
         // First time seeing this fixture
         _oddsFingerprints[fid] = { hash, lastChanged: now };
+        integrity.noteOddsChanged(fid, now);
       } else if (prev.hash !== hash) {
         // Odds changed — update timestamp
         _oddsFingerprints[fid] = { hash, lastChanged: now };
+        integrity.noteOddsChanged(fid, now);
       }
       // else: same hash, keep old lastChanged
 
@@ -1026,9 +1193,22 @@ async function tickLiveFixtures() {
     const updates = [];
     const newlyFinished = [];
 
+    const now = Date.now();
     for (const live of liveData) {
       const match = matches.find(m => m.id === live.id);
       if (!match) continue;
+
+      // A goal or red card makes the current live prices wrong until the feed reacts:
+      // suspend this match's live odds right away (the integrity guard blocks bets meanwhile).
+      const incident = integrity.noteLiveUpdate(live.id, live, now);
+      if (incident) {
+        console.log(`[INTEGRITY] ${incident.kind} in ${live.id} at ${live.elapsed}' — live markets paused`);
+        const liveItem = currentLiveOdds.find(o => o.fixtureId === live.id);
+        if (liveItem) {
+          for (const bet of liveItem.odds || []) for (const v of bet.values || []) v.suspended = true;
+          broadcast("liveOdds", currentLiveOdds);
+        }
+      }
 
       const wasNotFinished = !FINISHED_SHORT.has(match.statusShort);
       const isNowFinished = FINISHED_SHORT.has(live.statusShort);
@@ -1048,8 +1228,10 @@ async function tickLiveFixtures() {
         score: live.score,
       });
 
+      if (live.redCards) match.redCards = live.redCards;
       if (wasNotFinished && isNowFinished) {
         newlyFinished.push(match);
+        integrity.forgetFixture(match.id);
       }
     }
 
@@ -1249,31 +1431,46 @@ function startEngine() {
 // ══════════════════════════════════════════
 // START SERVER
 // ══════════════════════════════════════════
-app.listen(PORT, async () => {
-  console.log("=".repeat(50));
-  console.log(`FantasyBet server running at http://localhost:${PORT}`);
-  console.log("=".repeat(50));
+function startServer() {
+  return app.listen(PORT, async () => {
+    console.log("=".repeat(50));
+    console.log(`FantasyBet server running at http://localhost:${PORT}`);
+    console.log("=".repeat(50));
 
-  // Initialize database (create tables + migrate JSON if needed)
-  try {
-    await db.initDB();
-    const dbMatches = await db.loadMatches();
-    if (dbMatches.length > 0) {
-      matches = dbMatches;
-      lastMatchUpdate = new Date().toISOString();
-      console.log(`[INIT] Loaded ${matches.length} matches from database`);
+    // Initialize database (create tables + migrate JSON if needed)
+    try {
+      await db.initDB();
+      const dbMatches = await db.loadMatches();
+      if (dbMatches.length > 0) {
+        matches = dbMatches;
+        lastMatchUpdate = new Date().toISOString();
+        console.log(`[INIT] Loaded ${matches.length} matches from database`);
+      }
+    } catch (e) {
+      console.error("[DB] Init failed:", e.message);
+      console.error("Check DATABASE_URL environment variable");
     }
-  } catch (e) {
-    console.error("[DB] Init failed:", e.message);
-    console.error("Check DATABASE_URL environment variable");
-  }
 
-  if (!isApiKeyConfigured()) {
-    console.log("API key not configured. Edit .env and set API_FOOTBALL_KEY");
-    console.log("The site will work with mock data until then.\n");
-  } else {
-    console.log("API key configured. Starting real-time engine...\n");
-  }
+    if (!isApiKeyConfigured()) {
+      console.log("API key not configured. Edit .env and set API_FOOTBALL_KEY");
+      console.log("The site will work with mock data until then.\n");
+    } else {
+      console.log("API key configured. Starting real-time engine...\n");
+    }
 
-  startEngine();
-});
+    startEngine();
+  });
+}
+
+if (require.main === module) {
+  startServer();
+}
+
+// test hook: lets tests seed the in-memory match state
+function __setState(state) {
+  if (state.matches) matches = state.matches;
+  if (state.currentLiveOdds) currentLiveOdds = state.currentLiveOdds;
+  if ("betBuilderGenerate" in state) _betBuilderGenerate = state.betBuilderGenerate;
+}
+
+module.exports = { app, startServer, evaluateSelection, computeBetOutcome, quoteBet, settleBets, __setState };
