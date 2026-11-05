@@ -278,6 +278,7 @@
     <div class="main-content">
       <div class="matches-section" id="homePage">
         <div class="league-tabs" id="leagueTabs"></div>
+        <div class="data-plan-note" id="dataPlanNote" hidden></div>
         <div class="matches-toolbar" id="matchesToolbar">
           <div class="sort-toggle" id="sortToggle">
             <button class="sort-toggle-btn active" id="sortByTimeBtn" onclick="setSortMode('time')">⏱ By Time</button>
@@ -453,9 +454,29 @@
 
       // Connect to SSE for real-time updates
       connectSSE();
+      loadDataPlan();
+      setInterval(loadDataPlan, 5 * 60 * 1000);
 
       // "Starting" tag checker: every second, check if any NS match is within 60s of kickoff
       setInterval(checkStartingMatches, 1000);
+    }
+
+    // On a small API plan the server polls live scores minutes apart and has no live odds:
+    // say so, so a score that lags the TV isn't a surprise.
+    let dataPlan = null;
+    async function loadDataPlan() {
+      try {
+        const res = await fetch("/api/status");
+        if (res.ok) { dataPlan = (await res.json()).dataPlan || null; renderDataPlanNote(); }
+      } catch (e) {}
+    }
+    function renderDataPlanNote() {
+      const el = document.getElementById("dataPlanNote");
+      if (!el) return;
+      if (!dataPlan || dataPlan.mode !== "budget") { el.hidden = true; return; }
+      const min = dataPlan.liveIntervalSec ? Math.max(1, Math.round(dataPlan.liveIntervalSec / 60)) : null;
+      el.textContent = min ? t("dataPlanNote").replace("{min}", min) : t("dataPlanNoteIdle");
+      el.hidden = false;
     }
 
     // ══════════════════════════════════════════
@@ -804,6 +825,7 @@
       document.getElementById("emptySlipText").textContent = t("emptySlip");
       document.getElementById("emptySlipHint").textContent = t("addTip");
       document.getElementById("bbInput").placeholder = t("bbPlaceholder");
+      renderDataPlanNote();
       document.getElementById("stakeLabel").textContent = t("stake");
       document.getElementById("totalOddsLabel").textContent = t("totalOdds");
       document.getElementById("possibleWinLabel").textContent = t("possibleWin");
@@ -2075,6 +2097,7 @@
     function translateServerError(err) {
       if (!err) return t("insufficientCredits");
       if (/delayed|briefly closed|Waiting for updated odds/.test(err)) return t("liveMarketPaused");
+      if (err.includes("Betting closed")) return t("bettingClosed");
       if (err.includes("no longer available") || err.includes("Live odds not available")) return t("selectionUnavailable");
       if (err.includes("suspended")) return t("oddsSuspended");
       if (err.includes("finished")) return t("matchFinished");

@@ -183,7 +183,7 @@ function makeTools(deps, tz) {
         if (!match || isFinished(match)) { errors.push({ ...sel, error: "Match not found or already finished" }); continue; }
         const live = isLive(match);
         const liveItem = live ? getLiveOdds().find((o) => o.fixtureId === match.id) : null;
-        const price = pricing.priceSelection(sel, { match, liveItem, live });
+        const price = pricing.priceSelection(sel, { match, liveItem, live, now: now() });
         if (price.error) { errors.push({ ...sel, error: price.error }); continue; }
         if (live) {
           const check = integrity.checkLiveBet(match.id, match, now());

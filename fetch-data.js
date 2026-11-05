@@ -7,7 +7,10 @@
 //   GET /fixtures?from=&to=       Fixture list (daily refresh)
 //   GET /fixtures?live=all        Live scores & status (every 5-15s)
 //   GET /odds?fixture=X           Pre-match Bet365 odds (every 2h)
+//   GET /odds?league=&season=     Pre-match odds for a league, 10 per page (budget mode)
+//   GET /status                   Plan and usage (free: not counted)
 //   GET /odds/live                Live in-play odds (every 5s)
+//   GET /fixtures?ids=1-2-3       Up to 20 fixtures with events + stats (budget mode, see quota.js)
 //
 // CLI:
 //   node fetch-data.js --status
@@ -41,8 +44,37 @@ const LIVE_DEDUP = [
 ];
 
 
+// ── Quota hooks (set by server.js, see quota.js) ──
+// gate(endpoint, params, meta) → false refuses the request before it is sent; observe({remaining, limit})
+// receives the API's own count from the rate-limit headers.
+// minSpacingMs keeps requests apart for per-minute limits (the free plan allows ~10 a minute).
+let quotaGate = null;
+let quotaObserver = null;
+// Once a response reports the plan's real per-minute limit (X-RateLimit-Limit), spacing follows it.
+let minSpacingMs = 0;
+let nextSlotAt = 0;
+let spacingFollowsApi = false;
+function setQuotaHooks({ gate = null, observe = null, spacingMs = 0 } = {}) {
+  quotaGate = gate; quotaObserver = observe; minSpacingMs = spacingMs; nextSlotAt = 0;
+  spacingFollowsApi = spacingMs > 0;
+}
+const spacingFor = (perMinute) => Math.ceil(60000 / Math.max(1, perMinute - 1));
+async function waitForSlot() {
+  if (!minSpacingMs) return;
+  const now = Date.now();
+  const at = Math.max(now, nextSlotAt);
+  nextSlotAt = at + minSpacingMs;
+  if (at > now) await new Promise(r => setTimeout(r, at - now));
+}
+
+class QuotaError extends Error {}
+
 // ── API Request ──
-function apiRequest(endpoint, params = {}) {
+async function apiRequest(endpoint, params = {}, meta = {}) {
+  if (quotaGate && !quotaGate(endpoint, params, meta)) {
+    throw new QuotaError(`API quota: ${endpoint} skipped to stay within the daily limit`);
+  }
+  await waitForSlot();
   return new Promise((resolve, reject) => {
     const query = Object.entries(params)
       .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
@@ -65,10 +97,18 @@ function apiRequest(endpoint, params = {}) {
         const remaining = res.headers["x-ratelimit-requests-remaining"];
         const limit = res.headers["x-ratelimit-requests-limit"];
         if (remaining) console.log(`  Remaining: ${remaining}/${limit}`);
+        if (quotaObserver && remaining != null) quotaObserver({ remaining: Number(remaining), limit: Number(limit) });
+        const perMinute = Number(res.headers["x-ratelimit-limit"]);
+        if (spacingFollowsApi && perMinute > 0) minSpacingMs = spacingFor(perMinute);
         try {
           const data = JSON.parse(body);
+          // API-Football answers 200 with an "errors" object for problems such as a used-up daily
+          // quota. Treat that as a failure: an empty "response" would otherwise look like
+          // "no live matches", and every live match would be marked finished.
           if (data.errors && Object.keys(data.errors).length > 0) {
             console.error("  API errors:", JSON.stringify(data.errors));
+            reject(new Error(`API error: ${JSON.stringify(data.errors).substring(0, 200)}`));
+            return;
           }
           if (res.statusCode !== 200) {
             reject(new Error(`HTTP ${res.statusCode}: ${body.substring(0, 200)}`));
@@ -124,6 +164,7 @@ async function fetchFixturesByRange(from, to) {
           country: item.league.country,
           logo: item.league.logo,
           flag: item.league.flag,
+          season: item.league.season,
         },
         home: { id: item.teams.home.id, name: item.teams.home.name, logo: item.teams.home.logo },
         away: { id: item.teams.away.id, name: item.teams.away.name, logo: item.teams.away.logo },
@@ -207,55 +248,104 @@ async function fetchLiveOdds() {
 }
 
 // ── Fetch pre-match Bet365 odds for a single fixture ──
+// Throws when the request fails (or the quota refuses it), so the caller can try again later;
+// returns [] when the bookmaker has no odds for the match.
 async function fetchPreMatchOdds(fixtureId) {
-  try {
-    const data = await apiRequest("odds", { fixture: fixtureId, bookmaker: BET365_ID });
-    const items = data.response || [];
-    for (const item of items) {
-      const bet365 = item.bookmakers?.find(b => b.id === BET365_ID);
-      if (bet365) {
-        return bet365.bets.filter(b => ALLOWED_BET_IDS.has(b.id));
-      }
+  const data = await apiRequest("odds", { fixture: fixtureId, bookmaker: BET365_ID });
+  const items = data.response || [];
+  for (const item of items) {
+    const bet365 = item.bookmakers?.find(b => b.id === BET365_ID);
+    if (bet365) {
+      return bet365.bets.filter(b => ALLOWED_BET_IDS.has(b.id));
     }
-  } catch (err) {
-    console.error(`  FAIL odds fixture ${fixtureId}: ${err.message}`);
   }
   return [];
+}
+
+// Statistics for both teams, from the "statistics" array of /fixtures/statistics or /fixtures?ids=
+function parseStatistics(items) {
+  const stats = {};
+  for (const team of items || []) {
+    const side = team.team?.id ? team.team : null;
+    if (!side) continue;
+    const map = {};
+    for (const s of (team.statistics || [])) {
+      map[s.type] = s.value;
+    }
+    // first = home, second = away
+    const key = Object.keys(stats).length === 0 ? "home" : "away";
+    stats[key] = {
+      teamId: side.id,
+      teamName: side.name,
+      corners: parseInt(map["Corner Kicks"]) || 0,
+      yellowCards: parseInt(map["Yellow Cards"]) || 0,
+      redCards: parseInt(map["Red Cards"]) || 0,
+      totalCards: (parseInt(map["Yellow Cards"]) || 0) + (parseInt(map["Red Cards"]) || 0),
+      shotsOnGoal: parseInt(map["Shots on Goal"]) || 0,
+      shotsTotal: parseInt(map["Total Shots"]) || 0,
+      fouls: parseInt(map["Fouls"]) || 0,
+    };
+  }
+  if (stats.home && stats.away) {
+    stats.totalCorners = stats.home.corners + stats.away.corners;
+    stats.totalCards = stats.home.totalCards + stats.away.totalCards;
+    stats.totalShotsOnGoal = stats.home.shotsOnGoal + stats.away.shotsOnGoal;
+  }
+  return stats;
+}
+
+// Goals in order, from an events array
+function parseEvents(events) {
+  const goals = (events || [])
+    .filter(e => e.type === "Goal")
+    .sort((a, b) => (a.time.elapsed + (a.time.extra || 0) / 100) - (b.time.elapsed + (b.time.extra || 0) / 100))
+    .map((e, i) => ({
+      index: i + 1,
+      minute: e.time.elapsed,
+      extra: e.time.extra || 0,
+      teamId: e.team.id,
+      teamName: e.team.name,
+      player: e.player?.name || "",
+      detail: e.detail, // "Normal Goal", "Penalty", "Own Goal"
+    }));
+  return { goals, raw: events || [] };
+}
+
+// ── Pre-match odds for a whole league (budget mode) ──
+// GET /odds pages 10 fixtures per request; one league's upcoming week usually fits in a few
+// pages, far cheaper than one request per match. Returns Map fixtureId → bets, and pages read.
+async function fetchPreMatchOddsByLeague(league, season, { maxPages = 5 } = {}) {
+  const odds = new Map();
+  let page = 1, total = 1;
+  while (page <= total && page <= maxPages) {
+    const data = await apiRequest("odds", { league, season, bookmaker: BET365_ID, page });
+    total = data.paging?.total || 1;
+    for (const item of data.response || []) {
+      const bet365 = item.bookmakers?.find(b => b.id === BET365_ID);
+      if (item.fixture?.id && bet365) odds.set(item.fixture.id, bet365.bets.filter(b => ALLOWED_BET_IDS.has(b.id)));
+    }
+    page++;
+  }
+  return { odds, pages: page - 1, totalPages: total };
+}
+
+// ── Account status: plan and today's usage. Free: does not count against the daily quota. ──
+async function fetchStatus() {
+  const data = await apiRequest("status");
+  const r = data.response || {};
+  return {
+    plan: r.subscription?.plan || null,
+    active: r.subscription?.active ?? null,
+    limitDay: Number(r.requests?.limit_day) || null,
+    current: Number(r.requests?.current) || 0,
+  };
 }
 
 // ── Fetch fixture statistics (corners, cards, shots — 1 API call per fixture) ──
 async function fetchFixtureStatistics(fixtureId) {
   try {
     const data = await apiRequest("fixtures/statistics", { fixture: fixtureId });
-    const items = data.response || [];
-    const stats = {};
-    for (const team of items) {
-      const side = team.team?.id ? team.team : null;
-      if (!side) continue;
-      const map = {};
-      for (const s of (team.statistics || [])) {
-        map[s.type] = s.value;
-      }
-      // We'll identify home/away by index: first = home, second = away
-      const key = Object.keys(stats).length === 0 ? "home" : "away";
-      stats[key] = {
-        teamId: side.id,
-        teamName: side.name,
-        corners: parseInt(map["Corner Kicks"]) || 0,
-        yellowCards: parseInt(map["Yellow Cards"]) || 0,
-        redCards: parseInt(map["Red Cards"]) || 0,
-        totalCards: (parseInt(map["Yellow Cards"]) || 0) + (parseInt(map["Red Cards"]) || 0),
-        shotsOnGoal: parseInt(map["Shots on Goal"]) || 0,
-        shotsTotal: parseInt(map["Total Shots"]) || 0,
-        fouls: parseInt(map["Fouls"]) || 0,
-      };
-    }
-    if (stats.home && stats.away) {
-      stats.totalCorners = stats.home.corners + stats.away.corners;
-      stats.totalCards = stats.home.totalCards + stats.away.totalCards;
-      stats.totalShotsOnGoal = stats.home.shotsOnGoal + stats.away.shotsOnGoal;
-    }
-    return stats;
+    return parseStatistics(data.response);
   } catch (err) {
     console.error(`  FAIL statistics fixture ${fixtureId}: ${err.message}`);
     return null;
@@ -266,24 +356,35 @@ async function fetchFixtureStatistics(fixtureId) {
 async function fetchFixtureEvents(fixtureId) {
   try {
     const data = await apiRequest("fixtures/events", { fixture: fixtureId });
-    const events = data.response || [];
-    const goals = events
-      .filter(e => e.type === "Goal")
-      .sort((a, b) => (a.time.elapsed + (a.time.extra || 0) / 100) - (b.time.elapsed + (b.time.extra || 0) / 100))
-      .map((e, i) => ({
-        index: i + 1,
-        minute: e.time.elapsed,
-        extra: e.time.extra || 0,
-        teamId: e.team.id,
-        teamName: e.team.name,
-        player: e.player?.name || "",
-        detail: e.detail, // "Normal Goal", "Penalty", "Own Goal"
-      }));
-    return { goals, raw: events };
+    return parseEvents(data.response);
   } catch (err) {
     console.error(`  FAIL events fixture ${fixtureId}: ${err.message}`);
     return null;
   }
+}
+
+// ── Fetch up to 20 fixtures in one call (budget mode) ──
+// GET /fixtures?ids=1-2-3 returns each fixture with its status and score and, unlike
+// ?live=all, also finished ones — so a match's end is seen, not guessed — plus its events and
+// statistics, so settling needs no extra calls. Statistics may be missing (smaller leagues,
+// or not yet published); then stats is null and the caller can fetch them later.
+async function fetchFixturesByIds(ids, { purpose } = {}) {
+  if (ids.length === 0) return [];
+  const data = await apiRequest("fixtures", { ids: ids.join("-") }, { purpose });
+  return (data.response || []).map(item => {
+    const stats = parseStatistics(item.statistics);
+    return {
+      id: item.fixture.id,
+      status: item.fixture.status.long,
+      statusShort: item.fixture.status.short,
+      elapsed: item.fixture.status.elapsed,
+      score: item.goals.home !== null ? { home: item.goals.home, away: item.goals.away } : null,
+      htScore: item.score?.halftime?.home !== null ? { home: item.score.halftime.home, away: item.score.halftime.away } : null,
+      redCards: countRedCards(item),
+      events: Array.isArray(item.events) ? parseEvents(item.events) : null,
+      stats: stats.home && stats.away ? stats : null,
+    };
+  });
 }
 
 // ── File I/O ──
@@ -306,6 +407,13 @@ function loadExistingData() {
 module.exports = {
   countRedCards,
   apiRequest,
+  setQuotaHooks,
+  QuotaError,
+  parseStatistics,
+  parseEvents,
+  fetchFixturesByIds,
+  fetchPreMatchOddsByLeague,
+  fetchStatus,
   fetchFixturesByRange,
   fetchLiveFixtures,
   fetchLiveOdds,

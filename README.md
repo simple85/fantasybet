@@ -15,6 +15,7 @@ Fantasy football betting website built as a portfolio project. Users place bets 
 
 - **Live in-play odds** pushed to the browser over Server-Sent Events (no polling)
 - **Pre-match odds** for 30+ Bet365 markets, refreshed every 2 hours
+- **Runs on the free API plan**: below 30,000 requests a day the server switches to a budget mode that makes the daily quota last ([how it works](#data-refresh-and-api-quota))
 - **Combined and system bets**, priced by the server from its own odds (a stale price gets an "odds changed" answer, never the user's number)
 - **Betting integrity**: live markets pause right after goals and red cards and while the odds feed lags, and a Python anomaly model flags past-posting, odds-glitch hunting and multi-account rings for admin review ([how it works](#betting-integrity))
 - **AI bet builder**: describe a bet in Turkish, English or German and get a server-priced slip to add ([how it works](#ai-bet-builder))
@@ -65,16 +66,40 @@ The site works without an API key — it starts with mock data and switches to l
 
 The `.env` file is protected by `.gitignore` and will never be pushed to the repository.
 
-## Data Refresh Schedule
+## Data Refresh and API Quota
 
-| Time | Action | Est. Daily API Calls |
-|------|--------|----------------------|
-| 00:00, 12:00 | Full fixture + odds refresh | ~12 |
-| 04:00, 08:00, 16:00, 20:00 | Odds update only | ~30 |
-| Every hour (:30) | Finished match scores | ~10 |
-| **Total** | | **~50/day** |
+API-Football sells requests per day: 100 on the free plan, thousands on paid plans. At startup the server reads the plan from `GET /status`, which doesn't count against the quota, and picks its engine. `API_FOOTBALL_DAILY_LIMIT` overrides the detected plan.
 
-The free plan allows 100 requests/day, which is more than enough.
+**Full mode** (30,000+ requests a day):
+
+| What | How often | Requests a day |
+|---|---|---|
+| Live odds | every 5 s | ~17,300 |
+| Live scores | every 15 s | ~5,800 |
+| Pre-match odds | every 2 h, one request per match | thousands |
+| Fixture list | once a day | 4 |
+
+**Budget mode** (smaller plans, the free one included), in [`quota.js`](quota.js):
+
+- Only followed leagues are tracked: `API_FOOTBALL_LEAGUES` (by default Süper Lig, Premier League, La Liga, Bundesliga, Serie A, Ligue 1, Champions League and Europa League).
+- The fixture list is fetched once a day: 3 requests.
+- Pre-match odds come first, because they are what users bet on. `GET /odds?league=` returns 10 matches per request, so a league with several upcoming matches is fetched whole. Single matches are fetched one by one, soonest kickoff first. Pre-match odds use at most half of the quota.
+- Live scores are polled only while a followed match can be in play. One `/fixtures?ids=` request covers up to 20 matches and also returns events and statistics, so settling costs nothing extra. The interval is recalculated after every poll so the remaining requests last until the quota resets at 00:00 UTC.
+- Live odds are off, so there is no in-play betting. A feed minutes old would let people bet on goals that already happened.
+- Pre-match betting closes at the kickoff time, even if the status hasn't been updated yet.
+- Requests are spaced to stay under the per-minute limit. It starts at `API_FOOTBALL_PER_MINUTE` (default 10), then follows the `X-RateLimit-Limit` header. The API may block a key that sends traffic spikes. A reserve of 5 requests is kept for settling finished matches.
+- The API's own count, read from the `x-ratelimit-requests-remaining` header, overrides the local one. A restart or another client using the same key can't make the server overspend.
+
+A simulated busy Saturday on the free plan, `__tests__/budgetDay.test.js`, has 28 followed matches and a fake API that enforces both limits:
+
+| | |
+|---|---|
+| Requests used | 93 / 100 (fixtures 3, pre-match odds 16, live scores 74) |
+| Live score refresh | about every 8 minutes during matches |
+| Final whistle seen after | median 6 minutes, at worst 11 minutes |
+| Pre-match odds before kickoff | every match |
+
+The app tells users when it runs on the free plan, and the admin panel shows today's requests by purpose.
 
 ## Demo Users
 
@@ -110,6 +135,7 @@ fantasybet/
 ├── auth.js                 # password hashing, session cookies, route guards
 ├── pricing.js              # server-side odds lookup for every selection
 ├── integrity.js            # real-time guard against past-posting on live bets
+├── quota.js                # API request budget: makes a small daily quota last
 ├── betBuilder.js           # AI bet builder (Gemini function calling)
 ├── evals/                  # live evals for the bet builder (needs GEMINI_API_KEY)
 ├── ml/                     # Python integrity model (see ml/README.md)

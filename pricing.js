@@ -18,9 +18,10 @@ function samePrice(a, b) {
  *  match:    the match from the server's state
  *  liveItem: the match's entry in the live odds feed, or null
  *  live:     whether the match is in play right now
+ *  now:      the time of the bet (epoch ms)
  * Returns { odd, marketName, pick } or { error } with a message the user can see.
  */
-function priceSelection(sel, { match, liveItem, live }) {
+function priceSelection(sel, { match, liveItem, live, now = Date.now() }) {
   const betId = Number(sel.betId);
   const pick = typeof sel.pick === "string" ? sel.pick : null;
   if (!Number.isInteger(betId) || !pick) return { error: "Invalid selection" };
@@ -37,6 +38,11 @@ function priceSelection(sel, { match, liveItem, live }) {
     if (value.suspended) return { error: "Odds suspended for this selection" };
     return checkedPrice(value.odd, market.name, pick);
   }
+
+  // Pre-match prices close at kickoff, even if the status hasn't reached us yet: on a small API
+  // plan live scores arrive minutes apart, and a match still marked "Not Started" may be under way.
+  const start = Date.parse(match.date);
+  if (Number.isFinite(start) && now >= start) return { error: "Betting closed: the match has started" };
 
   const market = (match.bets || []).find((b) => b.id === betId);
   const value = market && (market.values || []).find((v) => v.value === pick);
